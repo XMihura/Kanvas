@@ -1,0 +1,40 @@
+{
+	"nodes":[
+		{"id":"eaf21cfb81a9148b","type":"group","x":-540,"y":880,"width":1300,"height":540,"label":"Report Writing"},
+		{"id":"d9fb4c5a1eb35fcb","type":"group","x":-40,"y":-80,"width":350,"height":900,"label":"Development"},
+		{"id":"f4f8ad523699d0ea","type":"group","x":-550,"y":120,"width":380,"height":700,"label":"Research"},
+		{"id":"17e280bd61cc57a2","type":"group","x":440,"y":120,"width":360,"height":700,"label":"Delivery"},
+		{"id":"canvas-errors","type":"text","text":"## Errors\n✓ None","x":-540,"y":-750,"width":380,"height":200,"color":"1"},
+		{"id":"legend","type":"text","text":"## Legend\n🔴 **Red** = To Do (ready)\n⬜ **Gray** = Blocked\n🟠 **Orange** = Doing\n🔵 **Cyan** = Ready to review\n🟢 **Green** = Done\n🟣 **Purple** = Proposed by agent","x":-540,"y":-310,"width":380,"height":230,"color":"0"},
+		{"id":"canvas-warnings","type":"text","text":"## Warnings\n✓ None","x":-540,"y":-530,"width":380,"height":200,"color":"3"},
+		{"id":"c7f7bffc84928a84","type":"text","text":"## RP-02 Write executive summary\nSummarize key findings and recommendations.","x":-500,"y":930,"width":280,"height":160,"color":"4"},
+		{"id":"da3f4cde08dbcf32","type":"text","text":"## RP-04 Collect raw data\nGather source data from all relevant systems.","x":-180,"y":930,"width":250,"height":160,"color":"4"},
+		{"id":"b43250bbc48bb11f","type":"text","text":"## RP-05 Design charts\nCreate visualizations for the analysis section.","x":100,"y":930,"width":250,"height":160,"color":"1"},
+		{"id":"6820ea5e559e1736","type":"text","text":"## RP-03 Compile data analysis\nProcess data and write the analysis section.","x":-55,"y":1200,"width":280,"height":180,"color":"0"},
+		{"id":"712cadb54a28f2ed","type":"text","text":"## RP-01 Publish final report\nCombine all sections and submit.","x":350,"y":1210,"width":280,"height":160,"color":"0"},
+		{"id":"4bdcf70b622335c8","type":"text","text":"## DV-01 Create initial prototype\nBuild a rough first version to validate the core idea.","x":0,"y":-40,"width":280,"height":160,"color":"4"},
+		{"id":"e03a5fb9f38930a4","type":"text","text":"## DV-02 Implement core features\nBuild the main functionality based on approved requirements.","x":0,"y":160,"width":280,"height":200,"color":"1"},
+		{"id":"8c99ed5628aadaab","type":"text","text":"## DV-03 Review and iterate\nCollect feedback, fix issues, and refine.","x":0,"y":400,"width":280,"height":160,"color":"0"},
+		{"id":"76440c28a6c1691c","type":"text","text":"## DV-04 Add error handling\nAgent-proposed: cover edge cases found during prototyping.","x":0,"y":600,"width":280,"height":180,"color":"6"},
+		{"id":"8ed198895f8e8d2a","type":"text","text":"## DL-01 Prepare deliverables\nPackage outputs, write summary, and organize files.","x":480,"y":140,"width":280,"height":180,"color":"1"},
+		{"id":"a5a716255cc99d94","type":"text","text":"## DL-02 Present results\nShare findings and deliverables with stakeholders.","x":480,"y":400,"width":280,"height":120,"color":"0"},
+		{"id":"244ac1465ce3fda8","type":"text","text":"## DL-03 Collect feedback\nAgent-proposed: gather stakeholder reactions for next iteration.","x":480,"y":600,"width":280,"height":180,"color":"0"},
+		{"id":"01423181603add7a","type":"text","text":"## RS-02 Gather requirements\nDocument key needs.","x":-500,"y":360,"width":280,"height":160,"color":"4"},
+		{"id":"5c31f3b3075b605c","type":"text","text":"## RS-01 Define objectives\nClarify project goals, scope, and success criteria.","x":-500,"y":160,"width":280,"height":160,"color":"4"},
+		{"id":"3dcf851fbfce3e3f","type":"text","text":"## RS-03 Evaluate options\nCompare approaches and recommend a direction.","x":-500,"y":560,"width":280,"height":160,"color":"4"}
+	],
+	"edges":[
+		{"id":"da1beea78df89e85","fromNode":"4bdcf70b622335c8","fromSide":"bottom","toNode":"e03a5fb9f38930a4","toSide":"top"},
+		{"id":"5f0bb7e6fd6dd1c5","fromNode":"3dcf851fbfce3e3f","fromSide":"right","toNode":"4bdcf70b622335c8","toSide":"left"},
+		{"id":"82690ed7843f7eee","fromNode":"01423181603add7a","fromSide":"bottom","toNode":"3dcf851fbfce3e3f","toSide":"top"},
+		{"id":"20f140b39393e6c8","fromNode":"5c31f3b3075b605c","fromSide":"bottom","toNode":"01423181603add7a","toSide":"top"},
+		{"id":"af5bdb835d3597d0","fromNode":"8c99ed5628aadaab","fromSide":"bottom","toNode":"76440c28a6c1691c","toSide":"top"},
+		{"id":"fac21f31b07d63e0","fromNode":"e03a5fb9f38930a4","fromSide":"bottom","toNode":"8c99ed5628aadaab","toSide":"top"},
+		{"id":"775a11b8b9b58a89","fromNode":"8ed198895f8e8d2a","fromSide":"bottom","toNode":"a5a716255cc99d94","toSide":"top"},
+		{"id":"15cfe0c5ebf48edb","fromNode":"b43250bbc48bb11f","fromSide":"bottom","toNode":"6820ea5e559e1736","toSide":"top"},
+		{"id":"83554d481a01c3ca","fromNode":"c7f7bffc84928a84","fromSide":"right","toNode":"da3f4cde08dbcf32","toSide":"left"},
+		{"id":"19837d26c620ac1c","fromNode":"da3f4cde08dbcf32","fromSide":"bottom","toNode":"6820ea5e559e1736","toSide":"top"},
+		{"id":"a66a9ce8880ba7b9","fromNode":"a5a716255cc99d94","fromSide":"bottom","toNode":"244ac1465ce3fda8","toSide":"top"},
+		{"id":"7eacad255a982e98","fromNode":"6820ea5e559e1736","fromSide":"right","toNode":"712cadb54a28f2ed","toSide":"left"}
+	]
+}

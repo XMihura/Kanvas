@@ -2,11 +2,16 @@
 
 A visual project board for **coordinating humans and AI agents** using [Obsidian](https://obsidian.md) Canvas.
 
+
+
+![Simple diagram of the idea](.\img\1-diagram.png)
+
+
 ---
 
 ## Why This Exists
 
-AI coding agents are getting good — and they perform best inside their own sandbox CLI environments, where companies optimize their RL training. Claude Code, Codex, Gemini CLI, Aider — each runs in its own terminal, each with its own strengths.
+AI coding agents are getting good — and they perform best inside their own sandbox CLI environments, where companies optimize their RL training. Claude Code, Codex, Gemini CLI, etc — each runs in its own terminal, each with its own strengths.
 
 But **who coordinates them?**
 
@@ -18,11 +23,10 @@ Obsidian already has a powerful Canvas tool: freeform nodes, groups, arrows, col
 
 The board is a **two-way conversation**. You add tasks, organize groups, set priorities, and draw dependencies in Obsidian. Agents read the board, propose new tasks they think are needed, start work, and report back. Either side can shape the project — you stay in control by approving what matters and marking what's done, while agents bring structure, suggestions, and execution.
 
-```
-You (Obsidian Canvas)  ←→  canvas-tool.py  ←→  Any AI Agent
-     ↕ add, organize,              ↕ propose, start,
-       prioritize, review            execute, report
-```
+### Project example
+
+![Example project board](.\img\2-example.png)
+
 
 ### What's in this project
 
@@ -183,7 +187,7 @@ cp kanvas/AGENTS.md ./GEMINI.md
 
 Same instructions, different filename.
 
-### Other agents (Aider, Cursor, etc.)
+### Other agents
 
 Copy the content of `AGENTS.md` into whatever system prompt or instruction file your agent uses. The key rules are:
 
