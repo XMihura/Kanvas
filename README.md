@@ -64,7 +64,24 @@ If a task depends on something that isn't green yet, it's gray (blocked). When t
 
 ### Setup
 
-Drop these files into your project repo:
+The quickest way to add Kanvas to any project:
+
+```bash
+python /path/to/canvas-tool.py init /path/to/your-project
+```
+
+This copies everything you need into the target directory:
+- `canvas-tool.py` — the CLI tool
+- `CLAUDE.md` / `AGENTS.md` — agent instructions
+- `RULES.md` — workflow protocol
+- `Project.canvas` — blank board template (only if no `.canvas` file exists yet)
+- **Canvas Watcher plugin** — automatically installed if `.obsidian/` exists
+
+If you haven't opened the folder in Obsidian yet, run `init` once to get the files, open it in Obsidian, then run `init` again to install the plugin.
+
+#### Manual setup
+
+Alternatively, drop these files into your project repo yourself:
 
 1. **`canvas-tool.py`** — the CLI tool
 2. **`CLAUDE.md`** / **`AGENTS.md`** — agent instructions (pick one for your platform)
@@ -94,8 +111,15 @@ Drop these files into your project repo:
 ## CLI Reference
 
 ```
+python canvas-tool.py init [TARGET_DIR]              # set up Kanvas in a project
 python canvas-tool.py "<file>.canvas" <command> [args]
 ```
+
+**Setup:**
+
+| Command | Description |
+|---------|-------------|
+| `init [DIR]` | Initialize Kanvas in a directory (copies files, installs plugin) |
 
 **Read:**
 
