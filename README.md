@@ -17,8 +17,8 @@ Kanvas gives you a visual project board in Obsidian Canvas where you lay out the
 - **Both sides contribute.** You add tasks, set priorities, draw dependencies. Agents propose tasks, do work, report back. The board is a shared space, not a one-way instruction sheet.
 - **Agent-agnostic.** Works with Claude Code, Codex, Gemini CLI, or anything that can run a shell command. Switch agents mid-project, use multiple at once — the board doesn't care.
 - **Git-friendly.** `.canvas` files are JSON. They diff, merge, and version like any other file in your repo.
-- **Low setup cost.** Obsidian + one Python file with no dependencies. Copy an instruction file to your project root and go. Optional Obsidian plugin adds dependency checks and automations.
-- **Flexible.** Some tasks are for agents, some are for you (hardware, design, manual testing). Same board, same colors, same flow.
+- **Simple.** One Python file, zero dependencies. No accounts, no SaaS, no build step. Clone, run `init`, start planning. The whole system is a workflow convention on top of tools you already have.
+- **Flexible.** Some tasks are for agents, some are for you (hardware, design, manual testing). Same board, same colors, same flow. Use one agent or five, swap them mid-project, or do everything yourself — the board adapts to how you work, not the other way around.
 
 Obsidian Canvas already gives you cards, groups, arrows, and colors. Kanvas adds a workflow on top: color-coded task states, dependency tracking, and a CLI that keeps agents from breaking the rules.
 
@@ -60,7 +60,9 @@ If a task depends on something that isn't green yet, it's gray (blocked). When t
 
 ## Getting Started
 
-**Requirements:** Python 3.7+, Obsidian.
+**Requirements:** Python 3.7+, Obsidian, Git. Works on Windows, macOS, and Linux.
+
+**Optional:** Node.js — only needed if you want to run the standalone `canvas-watcher.js`. Not required for the CLI tool or the Obsidian plugin (which `init` installs with Python).
 
 ### Setup
 
@@ -166,12 +168,14 @@ No delete, no done, no raw JSON editing — by design.
 
 Lints the board when you edit it in Obsidian. Updates blocked states, catches circular deps, flags warnings on save. Not required — the CLI handles the agent side independently.
 
+The plugin is installed automatically by `init` (no extra dependencies). To install manually:
+
 ```bash
-node canvas-watcher-plugin/install.js    # install into Obsidian
+node canvas-watcher-plugin/install.js    # requires Node.js
 # then enable in Settings → Community plugins → Canvas Watcher
 ```
 
-Or run standalone: `node canvas-watcher.js` (watch mode) or `node canvas-watcher.js "Project.canvas"` (one-shot).
+Or run standalone (requires Node.js): `node canvas-watcher.js` (watch mode) or `node canvas-watcher.js "Project.canvas"` (one-shot).
 
 ---
 
