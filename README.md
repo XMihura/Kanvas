@@ -70,7 +70,7 @@ First, clone Kanvas somewhere on your machine:
 git clone https://github.com/XMihura/Kanvas.git
 ```
 
-Then run `init` to set up Kanvas in your project:
+Then open your project folder in Obsidian (so it creates the `.obsidian/` directory), and run `init`:
 
 ```bash
 python Kanvas/canvas-tool.py init /path/to/your-project
@@ -83,7 +83,7 @@ This copies everything you need into the target directory:
 - `Project.canvas` — blank board template (only if no `.canvas` file exists yet)
 - **Canvas Watcher plugin** — automatically installed if `.obsidian/` exists
 
-If you haven't opened the folder in Obsidian yet, run `init` once to get the files, open it in Obsidian, then run `init` again to install the plugin.
+> **Note:** The Canvas Watcher plugin can only be installed if `.obsidian/` exists in your project — and that directory is created when Obsidian first opens the folder as a vault. If you run `init` before opening Obsidian, the plugin step will be skipped. Just open the folder in Obsidian and run `init` again to finish the install.
 
 #### Manual setup
 
