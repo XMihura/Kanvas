@@ -13,16 +13,13 @@ AI agents work best in their CLI sandboxes — that's what companies optimize th
 Kanvas gives you a visual project board in Obsidian Canvas where you lay out the plan, and agents interact with it through a CLI tool.
 
 **The goals:**
-
+- **Simple.** No accounts, no SaaS, no build step. It's literally just a prompt, a python CLI tool for the agents and a json file for the canvas. Clone, run `init`, start planning. The whole system is a workflow convention on top of tools you already have.
 - **Both sides contribute.** You add tasks, set priorities, draw dependencies. Agents propose tasks, do work, report back. The board is a shared space, not a one-way instruction sheet.
 - **Agent-agnostic.** Works with Claude Code, Codex, Gemini CLI, or anything that can run a shell command. Switch agents mid-project, use multiple at once — the board doesn't care.
 - **Git-friendly.** `.canvas` files are JSON. They diff, merge, and version like any other file in your repo.
-- **Simple.** One Python file, zero dependencies. No accounts, no SaaS, no build step. Clone, run `init`, start planning. The whole system is a workflow convention on top of tools you already have.
 - **Flexible.** Some tasks are for agents, some are for you (hardware, design, manual testing). Same board, same colors, same flow. Use one agent or five, swap them mid-project, or do everything yourself — the board adapts to how you work, not the other way around.
 
 Obsidian Canvas already gives you cards, groups, arrows, and colors. Kanvas adds a workflow on top: color-coded task states, dependency tracking, and a CLI that keeps agents from breaking the rules.
-
-
 
 ### What's in this project
 
