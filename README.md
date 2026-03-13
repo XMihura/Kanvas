@@ -64,10 +64,16 @@ If a task depends on something that isn't green yet, it's gray (blocked). When t
 
 ### Setup
 
-The quickest way to add Kanvas to any project:
+First, clone Kanvas somewhere on your machine:
 
 ```bash
-python /path/to/canvas-tool.py init /path/to/your-project
+git clone https://github.com/XMihura/Kanvas.git
+```
+
+Then run `init` to set up Kanvas in your project:
+
+```bash
+python Kanvas/canvas-tool.py init /path/to/your-project
 ```
 
 This copies everything you need into the target directory:
