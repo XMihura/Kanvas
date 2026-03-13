@@ -13,16 +13,13 @@ AI agents work best in their CLI sandboxes — that's what companies optimize th
 Kanvas gives you a visual project board in Obsidian Canvas where you lay out the plan, and agents interact with it through a CLI tool.
 
 **The goals:**
-
+- **Simple.** No accounts, no SaaS, no build step. It's literally just a prompt, a python CLI tool for the agents and a json file for the canvas. Clone, run `init`, start planning. The whole system is a workflow convention on top of tools you already have.
 - **Both sides contribute.** You add tasks, set priorities, draw dependencies. Agents propose tasks, do work, report back. The board is a shared space, not a one-way instruction sheet.
 - **Agent-agnostic.** Works with Claude Code, Codex, Gemini CLI, or anything that can run a shell command. Switch agents mid-project, use multiple at once — the board doesn't care.
 - **Git-friendly.** `.canvas` files are JSON. They diff, merge, and version like any other file in your repo.
-- **Low setup cost.** Obsidian + one Python file with no dependencies. Copy an instruction file to your project root and go. Optional Obsidian plugin adds dependency checks and automations.
-- **Flexible.** Some tasks are for agents, some are for you (hardware, design, manual testing). Same board, same colors, same flow.
+- **Flexible.** Some tasks are for agents, some are for you (hardware, design, manual testing). Same board, same colors, same flow. Use one agent or five, swap them mid-project, or do everything yourself — the board adapts to how you work, not the other way around.
 
 Obsidian Canvas already gives you cards, groups, arrows, and colors. Kanvas adds a workflow on top: color-coded task states, dependency tracking, and a CLI that keeps agents from breaking the rules.
-
-
 
 ### What's in this project
 
@@ -60,11 +57,36 @@ If a task depends on something that isn't green yet, it's gray (blocked). When t
 
 ## Getting Started
 
-**Requirements:** Python 3.7+, Obsidian.
+**Requirements:** Python 3.7+, Obsidian, Git. Works on Windows, macOS, and Linux.
+
+**Optional:** Node.js — only needed if you want to run the standalone `canvas-watcher.js`. Not required for the CLI tool or the Obsidian plugin (which `init` installs with Python).
 
 ### Setup
 
-Drop these files into your project repo:
+First, clone Kanvas somewhere on your machine:
+
+```bash
+git clone https://github.com/XMihura/Kanvas.git
+```
+
+Then open your project folder in Obsidian (so it creates the `.obsidian/` directory), and run `init`:
+
+```bash
+python Kanvas/canvas-tool.py init /path/to/your-project
+```
+
+This copies everything you need into the target directory:
+- `canvas-tool.py` — the CLI tool
+- `CLAUDE.md` / `AGENTS.md` — agent instructions
+- `RULES.md` — workflow protocol
+- `Project.canvas` — blank board template (only if no `.canvas` file exists yet)
+- **Canvas Watcher plugin** — automatically installed if `.obsidian/` exists
+
+> **Note:** The Canvas Watcher plugin can only be installed if `.obsidian/` exists in your project — and that directory is created when Obsidian first opens the folder as a vault. If you run `init` before opening Obsidian, the plugin step will be skipped. Just open the folder in Obsidian and run `init` again to finish the install.
+
+#### Manual setup
+
+Alternatively, drop these files into your project repo yourself:
 
 1. **`canvas-tool.py`** — the CLI tool
 2. **`CLAUDE.md`** / **`AGENTS.md`** — agent instructions (pick one for your platform)
@@ -94,8 +116,15 @@ Drop these files into your project repo:
 ## CLI Reference
 
 ```
+python canvas-tool.py init [TARGET_DIR]              # set up Kanvas in a project
 python canvas-tool.py "<file>.canvas" <command> [args]
 ```
+
+**Setup:**
+
+| Command | Description |
+|---------|-------------|
+| `init [DIR]` | Initialize Kanvas in a directory (copies files, installs plugin) |
 
 **Read:**
 
@@ -136,12 +165,14 @@ No delete, no done, no raw JSON editing — by design.
 
 Lints the board when you edit it in Obsidian. Updates blocked states, catches circular deps, flags warnings on save. Not required — the CLI handles the agent side independently.
 
+The plugin is installed automatically by `init` (no extra dependencies). To install manually:
+
 ```bash
-node canvas-watcher-plugin/install.js    # install into Obsidian
+node canvas-watcher-plugin/install.js    # requires Node.js
 # then enable in Settings → Community plugins → Canvas Watcher
 ```
 
-Or run standalone: `node canvas-watcher.js` (watch mode) or `node canvas-watcher.js "Project.canvas"` (one-shot).
+Or run standalone (requires Node.js): `node canvas-watcher.js` (watch mode) or `node canvas-watcher.js "Project.canvas"` (one-shot).
 
 ---
 
