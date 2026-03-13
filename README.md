@@ -58,44 +58,36 @@ If a task depends on something that isn't green yet, it's gray (blocked). When t
 ![Example project board](./img/2-example.png)
 ---
 
-## Quick Start
+## Getting Started
 
 **Requirements:** Python 3.7+, Obsidian.
 
-**1. Clone**
+### Setup
 
-```bash
-git clone https://github.com/XMihura/Kanvas.git
-```
+Drop these files into your project repo:
 
-**2. Create a board**
+1. **`canvas-tool.py`** — the CLI tool
+2. **`CLAUDE.md`** / **`AGENTS.md`** — agent instructions (pick one for your platform)
+3. **A `.canvas` file** — copy `examples/blank.canvas` as a starting point, or `examples/sample-project.canvas` to see a full example
 
-```bash
-python canvas-tool.py "My Project.canvas" batch <<'EOF'
-{
-  "groups": ["Research", "Development", "Delivery"],
-  "tasks": [
-    {"group": "Research", "title": "Define objectives", "desc": "Clarify goals and scope."},
-    {"group": "Research", "title": "Gather requirements", "desc": "Document needs.", "depends_on": ["Define objectives"]},
-    {"group": "Development", "title": "Build prototype", "desc": "First version.", "depends_on": ["Gather requirements"]},
-    {"group": "Delivery", "title": "Package outputs", "desc": "Prepare deliverables.", "depends_on": ["Build prototype"]}
-  ]
-}
-EOF
-```
-
-**3. Open in Obsidian** — right-click cards, set to red when ready to start.
-
-**4. Set up your agent** — copy one file:
-
-| Platform | Command |
+| Platform | Instruction file |
 |----------|---------|
-| Claude Code | `cp kanvas/CLAUDE.md ./CLAUDE.md` |
-| Codex | `cp kanvas/AGENTS.md ./AGENTS.md` |
-| Gemini CLI | `cp kanvas/AGENTS.md ./GEMINI.md` |
-| Others | Paste `AGENTS.md` into your agent's instructions |
+| Claude Code | `CLAUDE.md` in project root |
+| Codex | `AGENTS.md` in project root |
+| Gemini CLI | `AGENTS.md` renamed to `GEMINI.md` |
+| Others | Paste `AGENTS.md` content into your agent's system prompt |
 
-Done.
+### Recommended workflow
+
+1. **Plan first.** Open the `.canvas` in Obsidian. Add tasks yourself, or ask your agent to interview you about the project and propose a plan using `batch`. Spend time here — a good plan saves time later.
+
+2. **Review the board.** Approve proposals (purple → red), rearrange, add dependencies by drawing arrows. Get the canvas looking right before you start executing.
+
+3. **Execute with your agent.** The agent picks a red task, works on it, marks it for review. You verify and mark it green.
+
+4. **Commit per task.** After each task is done, commit the code *and* the `.canvas` file together. Your git history mirrors the project plan — you can check out any commit and see the board state at that point.
+
+5. **Repeat.** As tasks complete, blocked ones unlock. The board evolves as the project progresses.
 
 ---
 
