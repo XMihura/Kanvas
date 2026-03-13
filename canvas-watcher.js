@@ -189,6 +189,14 @@ function findLegendCard(nodes) {
   return nodes.find((n) => n.type === "text" && (n.text || "").startsWith("## Legend"));
 }
 
+function isWorkflowCanvas(canvas) {
+  const nodes = canvas.nodes || [];
+  const legend = findLegendCard(nodes);
+  if (!legend) return false;
+  const text = legend.text || "";
+  return text.includes("Red") && text.includes("Blocked");
+}
+
 function upsertStatusCard(canvas, cardId, title, items, color, slot) {
   const nodes = canvas.nodes;
   const existingIdx = nodes.findIndex((n) => n.id === cardId);
@@ -298,6 +306,12 @@ function processCanvas(filePath) {
     canvas = JSON.parse(raw);
   } catch {
     console.log(`  [skip] ${path.basename(filePath)} — invalid JSON`);
+    return;
+  }
+
+  // Only process Kanvas workflow canvases (must have Legend card with state keywords)
+  if (!isWorkflowCanvas(canvas)) {
+    console.log(`  [skip] ${path.basename(filePath)} — not a Kanvas workflow canvas`);
     return;
   }
 
