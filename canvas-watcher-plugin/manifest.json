@@ -4,6 +4,6 @@
 	"version": "1.0.0",
 	"minAppVersion": "1.0.0",
 	"description": "Auto-lints Canvas Workflow boards: manages blocked states, detects circular deps, and updates status cards.",
-	"author": "Eduardo Gonzalez Sanchez",
+	"author": "XMihura",
 	"isDesktopOnly": true
 }

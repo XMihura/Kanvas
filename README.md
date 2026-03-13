@@ -65,9 +65,7 @@ If a task depends on something that isn't green yet, it's gray (blocked). When t
 
 First, clone Kanvas somewhere on your machine:
 
-```bash
-git clone https://github.com/XMihura/Kanvas.git
-```
+Drop these files into your project repo:
 
 Then open your project folder in Obsidian (so it creates the `.obsidian/` directory), and run `init`:
 
