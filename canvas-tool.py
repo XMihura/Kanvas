@@ -1233,7 +1233,47 @@ def cmd_normalize(canvas, _args, path):
 # Init command — sets up Kanvas in a target project directory
 # ---------------------------------------------------------------------------
 
-def cmd_init(target_dir, install_plugin=True):
+def _prompt_file_conflict(filename):
+    """Prompt the user when an agent instruction file already exists.
+
+    Returns 'overwrite', 'skill', or 'cancel'.
+    """
+    print(f"\n  ⚠  {filename} already exists in the target directory.")
+    print("  What would you like to do?")
+    print("  1. Overwrite the existing file")
+    print("  2. Add Kanvas-workflow as a skill (append reference, copy kanvas-skill.md)")
+    print("  3. Cancel init")
+    while True:
+        choice = input("  Choice [1/2/3]: ").strip()
+        if choice in ("1", "2", "3"):
+            return {"1": "overwrite", "2": "skill", "3": "cancel"}[choice]
+        print("  Please enter 1, 2, or 3.")
+
+
+def _install_as_skill(target, script_dir, agent_file):
+    """Append a Kanvas skill reference to an existing agent file and copy the skill template."""
+
+    # 1. Copy kanvas-skill.md -> <target>/kanvas-skill.md (skip if already present)
+    skill_src = os.path.join(script_dir, "kanvas-skill.md")
+    skill_dst = os.path.join(target, "kanvas-skill.md")
+    if os.path.isfile(skill_src) and not os.path.isfile(skill_dst):
+        shutil.copy2(skill_src, skill_dst)
+
+    # 2. Append minimal reference block to the existing agent file
+    agent_path = os.path.join(target, agent_file)
+    block = (
+        "\n\n## Task & Project Board Management\n\n"
+        "This project uses an Obsidian Canvas file as its task board, managed via `canvas-tool.py`. "
+        "Whenever the user asks to check the board, pick a task, start/finish/pause work, "
+        "propose new tasks, or manage any project items tracked in a `.canvas` file, "
+        "read the complete file `kanvas.md` in the project root before taking any action. "
+        "Do not attempt to edit `.canvas` files directly under any circumstance.\n"
+    )
+    with open(agent_path, "a", encoding="utf-8") as f:
+        f.write(block)
+
+
+def cmd_init(target_dir, install_plugin=True, force=False):
     """Initialize Kanvas in a project directory.
 
     Copies the necessary files and optionally installs the Obsidian plugin.
@@ -1244,7 +1284,19 @@ def cmd_init(target_dir, install_plugin=True):
     if not os.path.isdir(target):
         error(f"Target directory does not exist: {target}")
 
-    print(f"Initializing Kanvas in: {target}\n")
+    # Phase A: collect decisions for conflicting agent files (no writes yet)
+    decisions = {}  # agent_file -> "overwrite" | "skill"
+    for agent_file in ("CLAUDE.md", "AGENTS.md"):
+        src = os.path.join(script_dir, agent_file)
+        dst = os.path.join(target, agent_file)
+        if os.path.isfile(src) and os.path.isfile(dst) and not force:
+            choice = _prompt_file_conflict(agent_file)
+            if choice == "cancel":
+                print("\nInit cancelled.")
+                return
+            decisions[agent_file] = choice
+
+    print(f"\nInitializing Kanvas in: {target}\n")
     copied = []
 
     # 1. Copy canvas-tool.py
@@ -1254,10 +1306,16 @@ def cmd_init(target_dir, install_plugin=True):
         shutil.copy2(src_tool, dst_tool)
         copied.append("canvas-tool.py")
 
-    # 2. Copy agent instruction files
+    # 2. Copy agent instruction files (Phase B: execute collected decisions)
     for agent_file in ("CLAUDE.md", "AGENTS.md"):
         src = os.path.join(script_dir, agent_file)
-        if os.path.isfile(src):
+        if not os.path.isfile(src):
+            continue
+        choice = decisions.get(agent_file, "overwrite")
+        if choice == "skill":
+            _install_as_skill(target, script_dir, agent_file)
+            copied.append(f"{agent_file} (Kanvas skill appended + kanvas-skill.md)")
+        else:
             shutil.copy2(src, os.path.join(target, agent_file))
             copied.append(agent_file)
 
@@ -1387,9 +1445,10 @@ def main():
     if len(sys.argv) >= 2 and sys.argv[1] == "init":
         init_args = sys.argv[2:]
         no_plugin = "--no-plugin" in init_args
+        force = "--force" in init_args
         positional = [a for a in init_args if not a.startswith("--")]
         target = positional[0] if positional else "."
-        cmd_init(target, install_plugin=not no_plugin)
+        cmd_init(target, install_plugin=not no_plugin, force=force)
         return
 
     parser = build_parser()
