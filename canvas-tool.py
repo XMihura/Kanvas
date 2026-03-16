@@ -273,32 +273,24 @@ def build_adj(canvas):
 
 
 def has_cycle_with_edge(canvas, from_id, to_id):
-    """Check if adding edge from_id → to_id would create a cycle (DFS)."""
+    """Check if adding edge from_id -> to_id would create a cycle.
+
+    Only checks whether to_id can already reach from_id through existing
+    edges.  If it can, adding from_id -> to_id would close a loop.
+    """
+    if from_id == to_id:
+        return True
     adj = build_adj(canvas)
-    adj[from_id].append(to_id)
     visited = set()
-    rec_stack = set()
-
-    def dfs(nid):
+    stack = [to_id]
+    while stack:
+        nid = stack.pop()
+        if nid == from_id:
+            return True
+        if nid in visited:
+            continue
         visited.add(nid)
-        rec_stack.add(nid)
-        for neighbor in adj.get(nid, []):
-            if neighbor not in visited:
-                if dfs(neighbor):
-                    return True
-            elif neighbor in rec_stack:
-                return True
-        rec_stack.discard(nid)
-        return False
-
-    # Check from the from_id
-    all_nodes = set(adj.keys())
-    for v in adj.values():
-        all_nodes.update(v)
-    for nid in all_nodes:
-        if nid not in visited:
-            if dfs(nid):
-                return True
+        stack.extend(adj.get(nid, []))
     return False
 
 
