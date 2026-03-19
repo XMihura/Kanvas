@@ -2,7 +2,7 @@
 
 ## v0.3.0 — 2026-03-19
 - Add DAG auto-layout engine to the Canvas Watcher plugin
-- Add **V** (vertical) and **H** (horizontal) layout buttons to the Obsidian canvas toolbar
+- Add vertical and horizontal layout buttons to the Obsidian canvas toolbar
 - Add layer-gap slider to control spacing between dependency levels, persisted across sessions
 - Layout respects group membership, resolves depth conflicts via graph coloring, and applies transitive reduction
 - Add `.gitattributes` to normalize line endings

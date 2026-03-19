@@ -3,7 +3,7 @@
 	"name": "Canvas Watcher",
 	"version": "1.1.0",
 	"minAppVersion": "1.0.0",
-	"description": "Canvas Workflow tool: auto-lints boards, manages blocked states, detects circular deps, and auto-layouts your DAG with V/H buttons.",
+	"description": "Canvas Workflow tool: auto-lints boards, manages blocked states, detects circular deps, and auto-layouts your DAG with vertical and horizontal layout buttons.",
 	"author": "XMihura",
 	"isDesktopOnly": true
 }

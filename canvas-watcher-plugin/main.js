@@ -220,7 +220,7 @@ function upsertStatusCard(canvas, cardId, title, items, color, slot) {
 
 function manageBlockedStates(nodes, edges) {
   const nodeMap = new Map(nodes.map((n) => [n.id, n]));
-  var changed = false;
+  let changed = false;
   const log = [];
 
   for (const node of nodes) {
@@ -931,7 +931,7 @@ module.exports = class CanvasWatcherPlugin extends Plugin {
     try {
       const raw = await this.app.vault.read(file);
 
-      var canvas;
+      let canvas;
       try {
         canvas = JSON.parse(raw);
       } catch (e) {
@@ -951,7 +951,7 @@ module.exports = class CanvasWatcherPlugin extends Plugin {
       }
 
       // Show notification summary
-      var parts = [];
+      const parts = [];
       if (result.errors.length > 0) {
         parts.push(result.errors.length + " error(s)");
       }
