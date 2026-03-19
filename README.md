@@ -182,6 +182,17 @@ node canvas-watcher-plugin/install.js    # requires Node.js
 
 Or run standalone (requires Node.js): `node canvas-watcher.js` (watch mode) or `node canvas-watcher.js "Project.canvas"` (one-shot).
 
+### Auto-layout
+
+The plugin adds two layout buttons to the Obsidian canvas toolbar:
+
+- **V** — arrange cards top-to-bottom by dependency depth (vertical DAG layout)
+- **H** — arrange cards left-to-right by dependency depth (horizontal DAG layout)
+
+Both buttons lay out tasks in topological order, group related cards together, resolve depth conflicts across groups via graph coloring, and apply transitive reduction so only direct dependency arrows are shown.
+
+A **layer-gap slider** below the buttons controls the spacing between dependency levels. Drag up to decrease spacing, drag down to increase it. The value is persisted across sessions.
+
 ---
 
 ## Project Structure
