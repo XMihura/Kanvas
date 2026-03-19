@@ -1246,12 +1246,18 @@ def cmd_init(target_dir, install_plugin=True):
         shutil.copy2(src_tool, dst_tool)
         copied.append("canvas-tool.py")
 
-    # 2. Copy agent instruction files
+    # 2. Copy agent instruction files (skip if already present)
     for agent_file in ("CLAUDE.md", "AGENTS.md"):
         src = os.path.join(script_dir, agent_file)
+        dst = os.path.join(target, agent_file)
         if os.path.isfile(src):
-            shutil.copy2(src, os.path.join(target, agent_file))
-            copied.append(agent_file)
+            if os.path.isfile(dst):
+                print(f"  [skip] {agent_file} already exists — not overwriting")
+                print(f"         Add this to your {agent_file} to enable Kanvas instructions:")
+                print(f"         @RULES.md\n")
+            else:
+                shutil.copy2(src, dst)
+                copied.append(agent_file)
 
     # 3. Copy RULES.md
     src_rules = os.path.join(script_dir, "RULES.md")
