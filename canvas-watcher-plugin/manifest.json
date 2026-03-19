@@ -1,9 +1,9 @@
 {
 	"id": "canvas-watcher",
 	"name": "Canvas Watcher",
-	"version": "1.0.0",
+	"version": "1.1.0",
 	"minAppVersion": "1.0.0",
-	"description": "Auto-lints Canvas Workflow boards: manages blocked states, detects circular deps, and updates status cards.",
+	"description": "Canvas Workflow tool: auto-lints boards, manages blocked states, detects circular deps, and auto-layouts your DAG with vertical and horizontal layout buttons.",
 	"author": "XMihura",
 	"isDesktopOnly": true
 }
