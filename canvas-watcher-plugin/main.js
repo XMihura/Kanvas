@@ -697,13 +697,17 @@ const DagLayout = (() => {
     // Group bounds computed AFTER transpose so padding is applied correctly
     const groupBounds = computeGroupBounds(placed, membership);
 
-    // Update or drop group nodes
+    // Update group nodes that contain tasks; collect empty groups for repositioning
+    const emptyGroups = [];
     const newNodes = nodes.filter(n => {
       if (n.type !== "group") return true;
-      if (!(n.id in groupBounds)) return false;
-      const [x, y, w, h] = groupBounds[n.id];
-      n.x = Math.round(x);  n.y = Math.round(y);
-      n.width = Math.round(w); n.height = Math.round(h);
+      if (n.id in groupBounds) {
+        const [x, y, w, h] = groupBounds[n.id];
+        n.x = Math.round(x);  n.y = Math.round(y);
+        n.width = Math.round(w); n.height = Math.round(h);
+      } else {
+        emptyGroups.push(n);
+      }
       return true;
     });
 
@@ -715,15 +719,51 @@ const DagLayout = (() => {
       n.width = Math.round(w); n.height = Math.round(h);
     }
 
-    // Retain only essential edges (transitive reduction) that reference live nodes
+    // Move empty groups out of the way: bottom (horizontal) or right (vertical)
+    if (emptyGroups.length) {
+      // Compute bounding box from populated groups only
+      const populatedGroups = newNodes.filter(n => n.type === "group" && n.id in groupBounds);
+      const ref = populatedGroups.length ? populatedGroups : newNodes.filter(n => !emptyGroups.includes(n));
+      const minX = Math.min(...ref.map(n => n.x));
+      const minY = Math.min(...ref.map(n => n.y));
+      const maxR = Math.max(...ref.map(n => n.x + n.width));
+      const maxB = Math.max(...ref.map(n => n.y + n.height));
+
+      if (horizontal) {
+        // Stack empty groups below the layout, aligned to leftmost group
+        let cursor = maxB + GROUP_GAP;
+        for (const g of emptyGroups) {
+          g.x = Math.round(minX);
+          g.y = Math.round(cursor);
+          cursor += g.height + GROUP_GAP;
+        }
+      } else {
+        // Stack empty groups to the right of the layout, aligned to topmost group
+        let cursor = maxR + GROUP_GAP;
+        for (const g of emptyGroups) {
+          g.x = Math.round(cursor);
+          g.y = Math.round(minY);
+          cursor += g.width + GROUP_GAP;
+        }
+      }
+    }
+
+    // Retain essential task edges (transitive reduction) and all non-task edges
     const validIds = new Set(newNodes.map(n => n.id));
     const fromSide = horizontal ? "right" : "bottom";
     const toSide   = horizontal ? "left"  : "top";
-    const newEdges = edges.filter(e =>
-      validIds.has(e.fromNode) && validIds.has(e.toNode) &&
-      (reducedOut[e.fromNode] || new Set()).has(e.toNode)
-    );
-    for (const e of newEdges) { e.fromSide = fromSide; e.toSide = toSide; }
+    const newEdges = edges.filter(e => {
+      if (!validIds.has(e.fromNode) || !validIds.has(e.toNode)) return false;
+      const bothTasks = taskIds.has(e.fromNode) && taskIds.has(e.toNode);
+      if (bothTasks) return (reducedOut[e.fromNode] || new Set()).has(e.toNode);
+      return true;  // preserve non-task edges (notes, legend, etc.)
+    });
+    for (const e of newEdges) {
+      // Only update sides for task-to-task edges
+      if (taskIds.has(e.fromNode) && taskIds.has(e.toNode)) {
+        e.fromSide = fromSide; e.toSide = toSide;
+      }
+    }
 
     return { ...canvas, nodes: newNodes, edges: newEdges };
   }
@@ -946,6 +986,10 @@ module.exports = class CanvasWatcherPlugin extends Plugin {
     try {
       const raw    = await this.app.vault.read(file);
       const canvas = JSON.parse(raw);
+      if (!isWorkflowCanvas(canvas)) {
+        new Notice("Canvas Watcher: not a workflow canvas — layout skipped");
+        return;
+      }
       const result = DagLayout.organize(canvas, { horizontal, layerGap: this.settings.layerGap });
       this._writing = true;
       await this.app.vault.modify(file, JSON.stringify(result, null, "\t"));
