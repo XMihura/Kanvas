@@ -2,3 +2,4 @@
 .claude/
 __pycache__/
 *.pyc
+skills_ignore/

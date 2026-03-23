@@ -1260,10 +1260,36 @@ def cmd_normalize(canvas, _args, path):
 # Init command — sets up Kanvas in a target project directory
 # ---------------------------------------------------------------------------
 
+def _install_skill(target, script_dir, skill_dir, installed):
+    """Install the Kanvas skill into a single platform directory.
+
+    Skips if the skill is already installed. Never overwrites.
+    """
+    kanvas_dir = os.path.join(target, skill_dir, "skills", "kanvas")
+    if os.path.isdir(kanvas_dir):
+        print(f"  ● {skill_dir}/skills/kanvas/ already exists — skipped")
+        return
+
+    scripts_dst = os.path.join(kanvas_dir, "scripts")
+    os.makedirs(scripts_dst, exist_ok=True)
+
+    # Copy SKILL.md
+    src_skill = os.path.join(script_dir, "skill", "SKILL.md")
+    if os.path.isfile(src_skill):
+        shutil.copy2(src_skill, os.path.join(kanvas_dir, "SKILL.md"))
+
+    # Copy canvas-tool.py into scripts/
+    src_tool = os.path.join(script_dir, "canvas-tool.py")
+    shutil.copy2(src_tool, os.path.join(scripts_dst, "canvas-tool.py"))
+
+    installed.append(f"{skill_dir}/skills/kanvas/")
+
+
 def cmd_init(target_dir, install_plugin=True):
     """Initialize Kanvas in a project directory.
 
-    Copies the necessary files and optionally installs the Obsidian plugin.
+    Installs Kanvas as an agent skill (additive, never overwrites) and
+    optionally installs the Obsidian Canvas Watcher plugin.
     """
     target = os.path.abspath(target_dir)
     script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -1272,73 +1298,70 @@ def cmd_init(target_dir, install_plugin=True):
         error(f"Target directory does not exist: {target}")
 
     print(f"Initializing Kanvas in: {target}\n")
-    copied = []
+    installed = []
 
-    # 1. Copy canvas-tool.py
-    src_tool = os.path.join(script_dir, "canvas-tool.py")
-    dst_tool = os.path.join(target, "canvas-tool.py")
-    if os.path.abspath(src_tool) != os.path.abspath(dst_tool):
-        shutil.copy2(src_tool, dst_tool)
-        copied.append("canvas-tool.py")
+    # 1. Install skill into platform directories
+    #    Always: .agents/ (open standard — Codex, Gemini, Cursor)
+    #    Plus any platform-specific dirs that already exist
+    platform_dirs = [".agents"]
+    for pdir in (".claude", ".cursor", ".gemini"):
+        if os.path.isdir(os.path.join(target, pdir)):
+            platform_dirs.append(pdir)
 
-    # 2. Copy agent instruction files
-    for agent_file in ("CLAUDE.md", "AGENTS.md"):
-        src = os.path.join(script_dir, agent_file)
-        if os.path.isfile(src):
-            shutil.copy2(src, os.path.join(target, agent_file))
-            copied.append(agent_file)
+    for pdir in platform_dirs:
+        _install_skill(target, script_dir, pdir, installed)
 
-    # 3. Copy RULES.md
-    src_rules = os.path.join(script_dir, "RULES.md")
-    if os.path.isfile(src_rules):
-        shutil.copy2(src_rules, os.path.join(target, "RULES.md"))
-        copied.append("RULES.md")
-
-    # 4. Copy blank canvas template if no .canvas file exists yet
+    # 2. Copy blank canvas template if no .canvas file exists yet
     existing_canvas = [f for f in os.listdir(target) if f.endswith(".canvas")]
     if not existing_canvas:
         src_blank = os.path.join(script_dir, "examples", "blank.canvas")
         if os.path.isfile(src_blank):
             shutil.copy2(src_blank, os.path.join(target, "Project.canvas"))
-            copied.append("Project.canvas (from blank template)")
+            installed.append("Project.canvas (from blank template)")
 
-    # 5. Install Canvas Watcher plugin if .obsidian/ exists and not skipped
+    # 3. Install Canvas Watcher plugin if .obsidian/ exists and not skipped
     obsidian_dir = os.path.join(target, ".obsidian")
     if not install_plugin:
         print("  Skipping plugin install (--no-plugin).\n")
     elif os.path.isdir(obsidian_dir):
         plugin_src = os.path.join(script_dir, "canvas-watcher-plugin")
         plugin_dst = os.path.join(obsidian_dir, "plugins", "canvas-watcher")
-        os.makedirs(plugin_dst, exist_ok=True)
 
-        for fname in ("main.js", "manifest.json"):
-            src = os.path.join(plugin_src, fname)
-            if os.path.isfile(src):
-                shutil.copy2(src, os.path.join(plugin_dst, fname))
+        if os.path.isdir(plugin_dst):
+            print("  ● Canvas Watcher plugin already installed — skipped")
+        else:
+            os.makedirs(plugin_dst, exist_ok=True)
 
-        # Register in community-plugins.json
-        cp_path = os.path.join(obsidian_dir, "community-plugins.json")
-        plugins = []
-        if os.path.isfile(cp_path):
-            with open(cp_path, "r", encoding="utf-8") as f:
-                try:
-                    plugins = json.load(f)
-                except json.JSONDecodeError:
-                    plugins = []
-        if "canvas-watcher" not in plugins:
-            plugins.append("canvas-watcher")
-            with open(cp_path, "w", encoding="utf-8") as f:
-                json.dump(plugins, f, indent=2)
+            for fname in ("main.js", "manifest.json"):
+                src = os.path.join(plugin_src, fname)
+                if os.path.isfile(src):
+                    shutil.copy2(src, os.path.join(plugin_dst, fname))
 
-        copied.append("Canvas Watcher plugin (installed + registered)")
+            # Register in community-plugins.json
+            cp_path = os.path.join(obsidian_dir, "community-plugins.json")
+            plugins = []
+            if os.path.isfile(cp_path):
+                with open(cp_path, "r", encoding="utf-8") as f:
+                    try:
+                        plugins = json.load(f)
+                    except json.JSONDecodeError:
+                        plugins = []
+            if "canvas-watcher" not in plugins:
+                plugins.append("canvas-watcher")
+                with open(cp_path, "w", encoding="utf-8") as f:
+                    json.dump(plugins, f, indent=2)
+
+            installed.append("Canvas Watcher plugin")
     else:
         print("  Note: No .obsidian/ folder found — skipping plugin install.")
         print("  Open the folder in Obsidian first, then re-run init to install the plugin.\n")
 
-    if copied:
-        print("  Copied:")
-        for item in copied:
+    if installed:
+        print("  Installed:")
+        for item in installed:
             print(f"    ✓ {item}")
+    else:
+        print("  Everything already installed — nothing to do.")
     print("\nDone. Open the folder in Obsidian and start planning!")
 
 
