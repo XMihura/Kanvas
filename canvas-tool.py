@@ -68,6 +68,12 @@ import uuid
 import shutil
 from collections import defaultdict
 
+# Force UTF-8 for stdio on Windows (prevents double-encoding of non-ASCII text
+# when piping through bash heredocs or other shell constructs).
+if sys.platform == "win32":
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -1031,7 +1037,7 @@ def cmd_batch(canvas, args, path):
     in the same batch by using the title as a reference (matched case-insensitively)
     in addition to existing task IDs on the board.
     """
-    raw = sys.stdin.read()
+    raw = sys.stdin.buffer.read().decode("utf-8")
     try:
         data = json.loads(raw)
     except json.JSONDecodeError as e:
