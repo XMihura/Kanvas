@@ -1369,12 +1369,18 @@ def cmd_layout(canvas, _args, path):
             (g.get("y", 0) + g.get("height", 700) / 2 - ty) ** 2
         ), default=None)
 
+    # Phase 1: assign all tasks to groups BEFORE repositioning anything.
+    # This must happen in one pass so that tasks moved by an earlier group's
+    # layout don't get re-claimed by a later group whose bounds they now overlap.
     nodes_by_group_id = {}
+    for group in groups:
+        nodes_by_group_id[group["id"]] = [t for t in tasks if _assign_group(t) == group]
+
     moved = 0
 
+    # Phase 2: reposition tasks within each group
     for group in groups:
-        group_tasks = [t for t in tasks if _assign_group(t) == group]
-        nodes_by_group_id[group["id"]] = group_tasks
+        group_tasks = nodes_by_group_id.get(group["id"], [])
         if not group_tasks:
             continue
 
