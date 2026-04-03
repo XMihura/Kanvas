@@ -66,6 +66,7 @@ import json
 import sys
 import os
 import re
+import math
 import argparse
 import uuid
 import shutil
@@ -275,6 +276,36 @@ def build_adj(canvas):
     return adj
 
 
+def compute_depths(canvas):
+    """Compute global longest-path depth for every task node.
+
+    depth(root) = 0; depth(t) = max(depth(parent) + 1 for each parent).
+    Only edges between task nodes are considered.
+    Returns a dict {node_id: depth}.
+    """
+    tasks = get_tasks(canvas)
+    task_ids = {t["id"] for t in tasks}
+    parents = defaultdict(list)
+    for e in canvas.get("edges", []):
+        fn, tn = e.get("fromNode"), e.get("toNode")
+        if fn in task_ids and tn in task_ids:
+            parents[tn].append(fn)
+
+    depths = {}
+
+    def _depth(nid):
+        if nid in depths:
+            return depths[nid]
+        depths[nid] = 0  # mark in-progress (cycle guard)
+        if parents[nid]:
+            depths[nid] = max(_depth(p) for p in parents[nid]) + 1
+        return depths[nid]
+
+    for t in tasks:
+        _depth(t["id"])
+    return depths
+
+
 def has_cycle_with_edge(canvas, from_id, to_id):
     """Check if adding edge from_id -> to_id would create a cycle.
 
@@ -427,7 +458,65 @@ def compute_group_placement(canvas, width=380, height=700):
     return int(new_x), int(new_y)
 
 
-def compute_placement(canvas, group, depends_on_nodes=None, card_w=280, card_h=160):
+def _card_size(text):
+    """Estimate card (width, height) from markdown card text.
+
+    Card text format:
+        ## ID Title
+        [blank line]
+        Description body, possibly multi-line.
+
+    Rendering assumptions (Obsidian Canvas, default zoom):
+        - ~8px per character (proportional font approximation)
+        - H2 title: ~22px line height
+        - Body text: ~18px line height
+        - Horizontal padding: 16px each side (32px total)
+        - Vertical padding: 40px total (top+bottom)
+        - Gap between title and body: 12px
+    """
+    CHAR_W   = 8
+    H_PAD    = 32   # left + right padding
+    V_PAD    = 40   # top + bottom padding
+    TITLE_LH = 22   # H2 line height
+    BODY_LH  = 18   # body line height
+    GAP      = 12   # space between title block and body
+
+    MIN_W, MAX_W = 280, 520
+    MIN_H        = 120
+
+    lines = text.split('\n')
+    title = ''
+    body_paragraphs = []
+    for line in lines:
+        if line.startswith('## '):
+            title = line[3:].strip()
+        elif title:
+            body_paragraphs.append(line)
+
+    # Width driven by title length; body wraps inside
+    card_w = max(MIN_W, min(MAX_W, len(title) * CHAR_W + H_PAD + 16))
+
+    chars_per_line = max(1, (card_w - H_PAD) // CHAR_W)
+
+    # Title lines
+    title_lines = math.ceil(len(title) / chars_per_line) if title else 1
+    title_h = title_lines * TITLE_LH
+
+    # Body lines (paragraph-aware; blank lines count as 1)
+    body_line_count = 0
+    for para in body_paragraphs:
+        if para.strip():
+            body_line_count += math.ceil(len(para) / chars_per_line)
+        else:
+            body_line_count += 1
+    body_h = body_line_count * BODY_LH
+
+    card_h = max(MIN_H, V_PAD + title_h + (GAP + body_h if body_h else 0))
+
+    return int(card_w), int(card_h)
+
+
+def compute_placement(canvas, group, depends_on_nodes=None, card_w=360, card_h=200):
     """Compute (x, y) for a new card inside a group.
 
     Rules:
@@ -947,11 +1036,10 @@ def _create_proposed_task(canvas, group, title, desc, depends_on_ids=None):
                 error(f"Dependency task '{did}' not found")
             dep_nodes.append(dnode)
 
-    card_w, card_h = 280, 160
-    new_x, new_y = compute_placement(canvas, group, dep_nodes or None, card_w, card_h)
-
     node_id = uuid.uuid4().hex[:8]
     text = f"## {task_id} {title}\n{desc}"
+    card_w, card_h = _card_size(text)
+    new_x, new_y = compute_placement(canvas, group, dep_nodes or None, card_w, card_h)
 
     new_node = {
         "id": node_id,
@@ -1239,6 +1327,127 @@ def cmd_add_dep(canvas, args, path):
 # ---------------------------------------------------------------------------
 
 
+def cmd_layout(canvas, _args, path):
+    """Reposition all tasks using DAG depth for top-to-bottom dependency flow.
+
+    Within each group tasks are compacted into rows by depth. Same-depth
+    tasks are arranged in columns (max MAX_COLS per row, wrapping to the
+    next sub-row). Groups are repositioned after resize to prevent overlap.
+    Edge attachment sides are recomputed after nodes move.
+    """
+    tasks = get_tasks(canvas)
+    if not tasks:
+        print("No tasks to lay out.")
+        return
+
+    depths = compute_depths(canvas)
+    groups = get_groups(canvas)
+    node_by_id = {n["id"]: n for n in canvas.get("nodes", [])}
+
+    CARD_W    = 360   # fallback card width (used when text is unavailable)
+    CARD_H    = 200   # fallback card height
+    ROW_GAP   = 80    # vertical gap between rows
+    COL_GAP   = 60    # horizontal gap between cards in a row
+    TOP_PAD   = 140   # space reserved for the group label
+    LEFT_PAD  = 120   # left inner margin
+    RIGHT_PAD = 120   # right inner margin
+    BOT_PAD   = 120   # bottom inner margin
+    MAX_COLS  = 3     # max cards per row before wrapping
+    GROUP_GAP = 150   # gap between groups after repositioning
+
+    # Assign each task to a group. Tasks geometrically outside all groups
+    # (strays from a prior layout run) fall back to the nearest group by
+    # center distance so they are always recaptured.
+    def _assign_group(t):
+        g = get_group_for_node(canvas, t)
+        if g is not None:
+            return g
+        tx = t.get("x", 0) + t.get("width", 280) / 2
+        ty = t.get("y", 0) + t.get("height", 160) / 2
+        return min(groups, key=lambda g: (
+            (g.get("x", 0) + g.get("width", 380) / 2 - tx) ** 2 +
+            (g.get("y", 0) + g.get("height", 700) / 2 - ty) ** 2
+        ), default=None)
+
+    nodes_by_group_id = {}
+    moved = 0
+
+    for group in groups:
+        group_tasks = [t for t in tasks if _assign_group(t) == group]
+        nodes_by_group_id[group["id"]] = group_tasks
+        if not group_tasks:
+            continue
+
+        gx, gy = int(group.get("x", 0)), int(group.get("y", 0))
+
+        # Bucket by depth; sort each bucket by current x then task ID (stable)
+        by_depth = defaultdict(list)
+        for t in group_tasks:
+            by_depth[depths[t["id"]]].append(t)
+        for layer in by_depth.values():
+            layer.sort(key=lambda t: (t.get("x", 0), task_id_str(t) or t["id"]))
+
+        cur_y = gy + TOP_PAD
+        max_right = gx + LEFT_PAD
+
+        for d in sorted(by_depth.keys()):
+            layer = by_depth[d]
+            for chunk in [layer[i:i + MAX_COLS] for i in range(0, len(layer), MAX_COLS)]:
+                # Size each card dynamically from its text content
+                for t in chunk:
+                    w, h = _card_size(t.get("text", ""))
+                    t["width"] = w
+                    t["height"] = h
+                row_h = max(int(t.get("height", CARD_H)) for t in chunk)
+                col_x = gx + LEFT_PAD
+                for t in chunk:
+                    t["x"] = col_x
+                    t["y"] = cur_y
+                    w = int(t.get("width", CARD_W))
+                    max_right = max(max_right, col_x + w)
+                    col_x += w + COL_GAP
+                    moved += 1
+                cur_y += row_h + ROW_GAP
+
+        group["width"]  = max_right - gx + RIGHT_PAD
+        group["height"] = cur_y - gy + BOT_PAD
+
+    # Reposition groups to eliminate overlap using collision detection.
+    # Sort by original x so we preserve the intended left-to-right order.
+    placed = []
+    for group in sorted(groups, key=lambda g: g.get("x", 0)):
+        if not nodes_by_group_id.get(group["id"]):
+            continue
+        gx = int(group.get("x", 0))
+        gy = int(group.get("y", 0))
+        gw = int(group.get("width", 400))
+        gh = int(group.get("height", 200))
+        new_x = gx
+        for prev in placed:
+            px, py = int(prev.get("x", 0)), int(prev.get("y", 0))
+            pw, ph = int(prev.get("width", 400)), int(prev.get("height", 200))
+            if _cards_overlap(new_x, gy, gw, gh, px, py, pw, ph, margin=GROUP_GAP):
+                new_x = max(new_x, px + pw + GROUP_GAP)
+        dx = new_x - gx
+        if dx:
+            group["x"] = new_x
+            for t in nodes_by_group_id[group["id"]]:
+                t["x"] = int(t.get("x", 0)) + dx
+        placed.append(group)
+
+    # Recompute edge attachment sides now that nodes have moved
+    for e in canvas.get("edges", []):
+        fn = node_by_id.get(e.get("fromNode"))
+        tn = node_by_id.get(e.get("toNode"))
+        if fn and tn:
+            fs, ts = pick_sides(fn, tn)
+            e["fromSide"] = fs
+            e["toSide"] = ts
+
+    save_canvas(path, canvas)
+    print(f"Layout applied: {moved} tasks repositioned across {len(groups)} groups.")
+
+
 def cmd_normalize(canvas, _args, path):
     """Run normalization and save."""
     changes = normalize(canvas)
@@ -1428,6 +1637,7 @@ def build_parser():
     p_dep.add_argument("to_id", help="Blocked task ID")
 
     # Maintenance
+    sub.add_parser("layout", help="Reposition tasks by DAG depth (top-to-bottom flow)")
     sub.add_parser("normalize", help="Run normalization")
 
     return parser
@@ -1480,6 +1690,7 @@ def main():
         "batch": cmd_batch,
         "edit": cmd_edit,
         "add-dep": cmd_add_dep,
+        "layout": cmd_layout,
         "normalize": cmd_normalize,
     }
 
