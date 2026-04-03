@@ -461,59 +461,75 @@ def compute_group_placement(canvas, width=380, height=700):
 def _card_size(text):
     """Estimate card (width, height) from markdown card text.
 
-    Card text format:
-        ## ID Title
-        [blank line]
-        Description body, possibly multi-line.
+    Strategy: treat all text as a single pixel ribbon (title_chars × TITLE_CW
+    + body_chars × BODY_CW), then solve for the wrapping width that gives the
+    target aspect ratio. The quadratic comes from:
 
-    Rendering assumptions (Obsidian Canvas, default zoom):
-        - ~8px per character (proportional font approximation)
-        - H2 title: ~22px line height
-        - Body text: ~18px line height
-        - Horizontal padding: 16px each side (32px total)
-        - Vertical padding: 40px total (top+bottom)
-        - Gap between title and body: 12px
+        card_w / card_h = TARGET_RATIO
+        card_h = total_px_ribbon * AVG_LH / text_w + V_PAD
+        card_w = text_w + H_PAD
+
+    Substituting and rearranging gives:
+        text_w² + (H_PAD - R*V_PAD)*text_w - R*total_px*AVG_LH = 0
+
+    All font/padding constants are scaled to match Obsidian Canvas rendering
+    at default zoom (empirically calibrated). No separate scale factor is
+    applied — the constants themselves encode the true pixel sizes.
     """
-    CHAR_W   = 8
-    H_PAD    = 32   # left + right padding
-    V_PAD    = 40   # top + bottom padding
-    TITLE_LH = 22   # H2 line height
-    BODY_LH  = 18   # body line height
-    GAP      = 12   # space between title block and body
+    TITLE_CW     = 24   # H2 char width  (16px × 1.5 Obsidian scale)
+    BODY_CW      = 18   # body char width (12px × 1.5)
+    TITLE_LH     = 54   # H2 line height  (36px × 1.5)
+    BODY_LH      = 39   # body line height(26px × 1.5)
+    GAP          = 18   # gap between title and body (12px × 1.5)
+    H_PAD        = 60   # total horizontal padding    (40px × 1.5)
+    V_PAD        = 120  # total vertical overhead     (80px × 1.5)
+    TARGET_RATIO = 1.6  # target width / height
 
-    MIN_W, MAX_W = 280, 520
-    MIN_H        = 120
+    MIN_W, MAX_W = 450, 840
+    MIN_H        = 300
 
     lines = text.split('\n')
     title = ''
-    body_paragraphs = []
+    body_paragraphs = []   # preserve paragraph structure for hard-break counting
     for line in lines:
         if line.startswith('## '):
             title = line[3:].strip()
         elif title:
             body_paragraphs.append(line)
 
-    # Width driven by title length; body wraps inside
-    card_w = max(MIN_W, min(MAX_W, len(title) * CHAR_W + H_PAD + 16))
+    # Total pixel widths used for the quadratic (flat ribbon approximation)
+    title_px  = len(title) * TITLE_CW
+    body_flat = sum(len(p) for p in body_paragraphs)
+    body_px   = body_flat * BODY_CW
+    total_px  = title_px + body_px
 
-    chars_per_line = max(1, (card_w - H_PAD) // CHAR_W)
+    if total_px == 0:
+        return MIN_W, MIN_H
 
-    # Title lines
-    title_lines = math.ceil(len(title) / chars_per_line) if title else 1
-    title_h = title_lines * TITLE_LH
+    # Weighted average line height for the quadratic
+    avg_lh = (title_px * TITLE_LH + body_px * BODY_LH) // total_px if total_px else TITLE_LH
 
-    # Body lines (paragraph-aware; blank lines count as 1)
-    body_line_count = 0
+    # Solve quadratic for text-area width at TARGET_RATIO
+    b = H_PAD - TARGET_RATIO * V_PAD
+    c = -(TARGET_RATIO * total_px * avg_lh)
+    text_w = (-b + math.sqrt(b * b - 4 * c)) / 2   # a=1
+
+    card_w = int(max(MIN_W, min(MAX_W, text_w + H_PAD)))
+    actual_tw = max(1, card_w - H_PAD)
+
+    # Height from actual wrapping — paragraph-aware for body to handle hard breaks
+    title_lines = math.ceil(title_px / actual_tw) if title else 1
+    body_lines = 0
     for para in body_paragraphs:
         if para.strip():
-            body_line_count += math.ceil(len(para) / chars_per_line)
+            body_lines += math.ceil(len(para) * BODY_CW / actual_tw)
         else:
-            body_line_count += 1
-    body_h = body_line_count * BODY_LH
+            body_lines += 1  # blank line is an explicit hard break
 
-    card_h = max(MIN_H, V_PAD + title_h + (GAP + body_h if body_h else 0))
+    card_h = int(max(MIN_H, V_PAD + title_lines * TITLE_LH +
+                     (GAP + body_lines * BODY_LH if body_lines else 0)))
 
-    return int(card_w), int(card_h)
+    return card_w, card_h
 
 
 def compute_placement(canvas, group, depends_on_nodes=None, card_w=360, card_h=200):
