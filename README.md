@@ -164,6 +164,7 @@ python canvas-tool.py "<file>.canvas" <command> [args]
 | `batch` | Bulk-add from JSON on stdin |
 | `add-dep <FROM> <TO>` | New dependency edge |
 | `normalize` | Assign IDs, fix blocked states |
+| `layout` | Reposition all tasks by DAG depth; resize and reflow groups |
 
 No delete, no done, no raw JSON editing — by design.
 
