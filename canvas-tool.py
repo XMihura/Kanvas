@@ -89,7 +89,7 @@ STATE_TO_COLOR = {v: k for k, v in COLOR_MAP.items()}
 
 TASK_ID_RE = re.compile(r"^##\s+([A-Z]{1,3})-(\d{2})\s+(.*)$", re.MULTILINE)
 
-NON_TASK_IDS = {"canvas-errors", "canvas-warnings", "legend"}
+NON_TASK_IDS = {"canvas-errors", "canvas-warnings", "legend", "canvas-status"}
 
 # ---------------------------------------------------------------------------
 # Canvas I/O
@@ -104,8 +104,110 @@ def load_canvas(path):
         return json.load(f)
 
 
+def _status_card_content(canvas):
+    """Generate markdown content for the canvas-status card."""
+    from collections import defaultdict as _dd
+    from datetime import datetime
+    tasks = [n for n in canvas.get("nodes", [])
+             if n.get("type") == "text" and n.get("id") not in NON_TASK_IDS
+             and TASK_ID_RE.search(n.get("text", ""))]
+    by_color = _dd(list)
+    for t in tasks:
+        by_color[t.get("color", "1")].append(t)
+
+    total = len(tasks)
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    # Stacked bar: each state gets a distinct character, proportional to count.
+    # Order: done → review → doing → ready → blocked/proposed
+    STATE_CHARS = [("4", "█"), ("5", "▓"), ("2", "▒"), ("1", "░"), ("0", "·"), ("6", "·")]
+    WIDTH = 20
+    if total == 0:
+        bar = "·" * WIDTH
+        legend = "no tasks"
+    else:
+        alloc = [[c, ch, len(by_color[c]), round(len(by_color[c]) * WIDTH / total)]
+                 for c, ch in STATE_CHARS]
+        diff = WIDTH - sum(a[3] for a in alloc)
+        if diff:
+            max(alloc, key=lambda a: a[2])[3] += diff
+        bar = "".join(ch * slots for _, ch, _, slots in alloc)
+        labels = {"4": "done", "5": "review", "2": "doing", "1": "ready", "0": "blocked", "6": "proposed"}
+        seen = set()
+        parts = []
+        for color, char, n, _ in alloc:
+            if n > 0 and char not in seen:
+                parts.append(f"{char}{labels[color]}:{n}")
+                seen.add(char)
+        legend = "  ".join(parts)
+
+    lines = ["## Status", f"*{now}*", "", f"`{bar}`  {total} tasks", legend]
+
+    review = by_color["5"]
+    if review:
+        lines += ["", f"**⏳ Review ({len(review)})**"]
+        for t in review[:6]:
+            lines.append(f"- {task_title(t)}")
+
+    # Compute ready tasks (red with all deps green)
+    edges = canvas.get("edges", [])
+    dep_map = {}
+    for e in edges:
+        dep_map.setdefault(e["toNode"], []).append(e["fromNode"])
+    node_by_id = {n["id"]: n for n in canvas.get("nodes", [])}
+    ready = [t for t in by_color["1"]
+             if all(node_by_id.get(d, {}).get("color") == "4"
+                    for d in dep_map.get(t["id"], []))]
+    if ready:
+        lines += ["", f"**✓ Ready ({len(ready)})**"]
+        for t in ready[:6]:
+            lines.append(f"- {task_title(t)}")
+
+    doing = by_color["2"]
+    if doing:
+        lines += ["", f"**▶ Doing ({len(doing)})**"]
+        for t in doing:
+            lines.append(f"- {task_title(t)}")
+
+    blocked_count = len(by_color["0"])
+    if blocked_count:
+        lines += ["", f"**⬜ Blocked:** {blocked_count}"]
+
+    proposed_count = len(by_color["6"])
+    if proposed_count:
+        lines += [f"**💡 Proposed:** {proposed_count}"]
+
+    return "\n".join(lines)
+
+
+def _upsert_status_card(canvas):
+    """Create or update the canvas-status card node."""
+    nodes = canvas.setdefault("nodes", [])
+    card = next((n for n in nodes if n.get("id") == "canvas-status"), None)
+    content = _status_card_content(canvas)
+    line_count = content.count("\n") + 1
+    height = max(200, line_count * 22 + 24)
+
+    if card is None:
+        all_nodes = [n for n in nodes if n.get("type") in ("text", "group")]
+        x = min((n.get("x", 0) for n in all_nodes), default=0) - 340
+        y = min((n.get("y", 0) for n in all_nodes), default=0)
+        nodes.append({
+            "id": "canvas-status",
+            "type": "text",
+            "text": content,
+            "x": x, "y": y,
+            "width": 300, "height": height,
+            "color": "",
+        })
+    else:
+        card["text"] = content
+        card["height"] = height
+
+
 def save_canvas(path, canvas):
     """Save the canvas dict back to disk with tab indentation."""
+    _upsert_status_card(canvas)
     with open(path, "w", encoding="utf-8", newline="\n") as f:
         json.dump(canvas, f, indent="\t", ensure_ascii=False)
         f.write("\n")
