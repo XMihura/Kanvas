@@ -275,6 +275,36 @@ def build_adj(canvas):
     return adj
 
 
+def compute_depths(canvas):
+    """Compute global longest-path depth for every task node.
+
+    depth(root) = 0; depth(t) = max(depth(parent) + 1 for each parent).
+    Only edges between task nodes are considered.
+    Returns a dict {node_id: depth}.
+    """
+    tasks = get_tasks(canvas)
+    task_ids = {t["id"] for t in tasks}
+    parents = defaultdict(list)
+    for e in canvas.get("edges", []):
+        fn, tn = e.get("fromNode"), e.get("toNode")
+        if fn in task_ids and tn in task_ids:
+            parents[tn].append(fn)
+
+    depths = {}
+
+    def _depth(nid):
+        if nid in depths:
+            return depths[nid]
+        depths[nid] = 0  # mark in-progress (cycle guard)
+        if parents[nid]:
+            depths[nid] = max(_depth(p) for p in parents[nid]) + 1
+        return depths[nid]
+
+    for t in tasks:
+        _depth(t["id"])
+    return depths
+
+
 def has_cycle_with_edge(canvas, from_id, to_id):
     """Check if adding edge from_id -> to_id would create a cycle.
 
@@ -1239,6 +1269,78 @@ def cmd_add_dep(canvas, args, path):
 # ---------------------------------------------------------------------------
 
 
+def cmd_layout(canvas, _args, path):
+    """Reposition all tasks using DAG depth for top-to-bottom dependency flow.
+
+    Within each group tasks are compacted into rows by depth (deepest deps at
+    the top, dependents below). Same-depth tasks are arranged horizontally,
+    ordered by their current x-position (stable) then task ID (fallback).
+    Edge attachment sides are recomputed after nodes move.
+    """
+    tasks = get_tasks(canvas)
+    if not tasks:
+        print("No tasks to lay out.")
+        return
+
+    depths = compute_depths(canvas)
+    groups = get_groups(canvas)
+    node_by_id = {n["id"]: n for n in canvas.get("nodes", [])}
+
+    ROW_GAP = 20
+    COL_GAP = 20
+    TOP_PAD = 40
+    LEFT_PAD = 20
+
+    moved = 0
+    for group in groups:
+        group_tasks = [t for t in tasks if get_group_for_node(canvas, t) == group]
+        if not group_tasks:
+            continue
+
+        gx, gy = group.get("x", 0), group.get("y", 0)
+
+        # Bucket by depth; within each bucket sort by current x then task ID
+        by_depth = defaultdict(list)
+        for t in group_tasks:
+            by_depth[depths[t["id"]]].append(t)
+        for layer in by_depth.values():
+            layer.sort(key=lambda t: (t.get("x", 0), task_id_str(t) or t["id"]))
+
+        max_right = gx + LEFT_PAD
+        max_bottom = gy + TOP_PAD
+
+        for row_idx, d in enumerate(sorted(by_depth.keys())):
+            layer = by_depth[d]
+            row_y = gy + TOP_PAD + row_idx * (
+                max(t.get("height", 160) for t in layer) + ROW_GAP
+            )
+            col_x = gx + LEFT_PAD
+            for t in layer:
+                w = t.get("width", 280)
+                h = t.get("height", 160)
+                t["x"] = col_x
+                t["y"] = row_y
+                max_right = max(max_right, col_x + w + LEFT_PAD)
+                max_bottom = max(max_bottom, row_y + h + TOP_PAD)
+                col_x += w + COL_GAP
+                moved += 1
+
+        group["width"] = max(group.get("width", 380), max_right - gx)
+        group["height"] = max(group.get("height", 700), max_bottom - gy)
+
+    # Recompute edge attachment sides now that nodes have moved
+    for e in canvas.get("edges", []):
+        fn = node_by_id.get(e.get("fromNode"))
+        tn = node_by_id.get(e.get("toNode"))
+        if fn and tn:
+            fs, ts = pick_sides(fn, tn)
+            e["fromSide"] = fs
+            e["toSide"] = ts
+
+    save_canvas(path, canvas)
+    print(f"Layout applied: {moved} tasks repositioned across {len(groups)} groups.")
+
+
 def cmd_normalize(canvas, _args, path):
     """Run normalization and save."""
     changes = normalize(canvas)
@@ -1428,6 +1530,7 @@ def build_parser():
     p_dep.add_argument("to_id", help="Blocked task ID")
 
     # Maintenance
+    sub.add_parser("layout", help="Reposition tasks by DAG depth (top-to-bottom flow)")
     sub.add_parser("normalize", help="Run normalization")
 
     return parser
@@ -1480,6 +1583,7 @@ def main():
         "batch": cmd_batch,
         "edit": cmd_edit,
         "add-dep": cmd_add_dep,
+        "layout": cmd_layout,
         "normalize": cmd_normalize,
     }
 
