@@ -129,3 +129,67 @@ python canvas-tool.py "Project.canvas" ready
 | 🔵 Cyan | Ready to review |
 | 🟢 Green | Done |
 | ⬜ Gray | Blocked |
+
+## Two-agent setup (overrides the sections above where they conflict)
+
+This project runs two roles. Everything above applies to the
+ORCHESTRATOR only.
+
+- Orchestrator: the only role that runs canvas-tool.py. Plans, delegates,
+  reviews, moves cards.
+- Executor (gentle-ai-worker): implements ONE card and reports back.
+  It must NEVER run canvas-tool.py, edit the .canvas file, or move cards.
+
+### Canvas-first rule (mandatory, applies before any other workflow)
+ALL work requests go through the canvas, no matter how small. This
+takes priority over any default workflow (ODD, plans, feature documents).
+1. On any request to build, change or fix something, FIRST propose the
+   work as cards with `batch` (purple), then STOP and wait for the
+   human to approve them. Do not edit project files before that.
+2. Small request = one single card.
+3. The human approving a card (purple to red) IS the authorization to
+   execute it. Do not ask for authorization again, and do not create
+   separate plans, task lists or feature documents.
+4. After approval, do NOT start until the human says to start.
+5. If the request names a branch, create it when starting the first card.
+6. Questions, explanations and reading the code do not need cards.
+
+### Picking a task
+- If several tasks are ready, pick them in dependency order. Only ask
+  the human which to prioritize if the choice is genuinely ambiguous.
+
+### Delegating
+1. Run `start <ID>` (orange), then delegate to the executor.
+2. Trivial edits (one file, a few lines, no exploration needed) may be
+   done directly by the orchestrator. Delegate everything else to
+   gentle-ai-worker.
+3. Give the executor only: goal, scope, and the "done when" command from
+   the card.
+4. The executor implements and returns a short summary of what changed.
+
+### Reviewing before cyan
+1. Run the card's "done when" command, then check that the result
+   matches the card's goal (not only that the command passes).
+2. If it fails or something is missing: delegate again with what is
+   missing. Do NOT run `finish`.
+3. If it passes: run `edit <ID>` to add a 2-3 line summary of what
+   changed, then `finish <ID>` (cyan).
+4. Never mark green. The human checks the diff and does that.
+
+### Writing cards
+Every proposed card must contain:
+- Goal: one sentence.
+- Scope: probable files or folders.
+- Done when: a command that proves it works (test, build, lint).
+One card = one executor session. Split anything bigger.
+
+### Style
+- Task state lives ONLY in the canvas. Do not create parallel task
+  lists or feature documents for a single card.
+- One commit per card, including the .canvas file.
+- Commit locally after each card, but NEVER push. The human reviews
+  the commit and pushes.
+- Modify project files with the edit/write tools, not with shell
+  commands like sed, echo or redirects, so the human can review the
+  changes in Gentle Changes.
+- Ask the human only for real scope decisions; otherwise keep going.
