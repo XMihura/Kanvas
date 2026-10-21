@@ -1790,7 +1790,13 @@ const addNote = (t, text, at) => t.notes.push({ at, by: "human", text });
 const ops = {
   title: (text) => (b) => { b.title = text; },
   set: (id, patch) => (b) => { Object.assign(mustFind(b, id), patch); },
-  state: (id, state, text, at = nowIso()) => (b) => { const t = mustFind(b, id); t.state = state; if (text) addNote(t, text, at); },
+  // `from` is the state the human saw, so a replay never undoes a move an agent made meanwhile.
+  state: (id, from, state, text, at = nowIso()) => (b) => {
+    const t = mustFind(b, id);
+    if (t.state !== from && t.state !== state) throw new Error(`${t.id} is in ${LABEL[t.state] || t.state} now, not ${LABEL[from] || from}`);
+    t.state = state;
+    if (text) addNote(t, text, at);
+  },
   note: (id, text, at = nowIso()) => (b) => addNote(mustFind(b, id), text, at),
   // Notes are found by author, time and text, so an edit still finds its note after agents add more.
   editNote: (id, n, rank, text, edited = nowIso()) => (b) => { const t = mustFind(b, id), i = noteIndex(t, n, rank); t.notes[i] = { ...t.notes[i], text, edited }; },
@@ -2441,7 +2447,7 @@ function renderKanban() {
         col.classList.remove("drop");
         const id = e.dataTransfer.getData("text/kanvas-id"), t = get(id);
         const target = s === "blocked" ? "todo" : s;
-        if (t && t.state !== target) commit(ops.state(t.id, target));
+        if (t && t.state !== target) commit(ops.state(t.id, t.state, target));
       });
     }
     return col;
@@ -2486,7 +2492,7 @@ function depRow(d, onRemove) {
 
 // `asks` marks moves that open a dialog first.
 function stateMoves(t) {
-  const to = (state) => () => commit(ops.state(t.id, state));
+  const to = (state) => () => commit(ops.state(t.id, t.state, state));
   switch (vstate(t)) {
     case "proposed": return [{ label: "Approve", icon: "check", run: to("todo"), to: "todo", primary: true }, { label: "Reject", icon: "trash", run: () => removeTask(t), danger: true, asks: true }];
     case "todo": return [{ label: "Start", icon: "play", run: to("doing"), to: "doing", primary: true }];
@@ -2709,7 +2715,7 @@ function nowCard(t, vs, ro, note) {
 function stateMenu(t) {
   return [{ head: "Move to" }, ...STATES.map((s) => ({
     label: [h("span", { class: `dot s-${s}` }), LABEL[s]], icon: s === t.state ? "check" : null,
-    run: () => { if (s !== t.state) commit(ops.state(t.id, s)); },
+    run: () => { if (s !== t.state) commit(ops.state(t.id, t.state, s)); },
   }))];
 }
 
@@ -2798,7 +2804,7 @@ async function sendBack(t) {
     h("p", {}, "The task returns to To do. Your feedback is added as a note, so the agent sees it when it starts again."),
     h("label", { class: "field" }, "What needs to change?", h("textarea", { name: "text", rows: 4, required: true, placeholder: "e.g. The retry loop never gives up; cap it at 5 attempts." })),
   ], { ok: "Send back" });
-  if (data) commit(ops.state(t.id, "todo", `Sent back: ${data.get("text").trim()}`));
+  if (data) commit(ops.state(t.id, t.state, "todo", `Sent back: ${data.get("text").trim()}`));
 }
 
 function approveMany(ids) {

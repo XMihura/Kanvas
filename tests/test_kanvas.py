@@ -38,14 +38,21 @@ def task(tid, state="todo", group=None, deps=(), **extra):
     return t
 
 
-def run_html_js(test, code, stdin):
-    """Runs `code` after the pure part of kanvas.html under Node, with `stdin` parsed as JSON in `input`."""
+def run_html_js(test, code, stdin, sections=()):
+    """Runs `code` after the pure part of kanvas.html under Node, with `stdin` parsed as JSON in `input`.
+
+    `sections` adds more of the page, each as a (start, end) pair of markers.
+    """
     node = shutil.which("node")
     if not node:
         test.skipTest("node is not installed")
     with open(os.path.join(ROOT, "kanvas.html"), encoding="utf-8") as f:
         html = f.read()
-    js = (html[html.index("const STATES ="):html.index("// App state")]
+    parts = [html[html.index("const STATES ="):html.index("// App state")]]
+    for start, end in sections:
+        i = html.index(start)
+        parts.append(html[i:html.index(end, i)])
+    js = ("\n".join(parts)
           + "\nconst input = JSON.parse(require('fs').readFileSync(0, 'utf8'));\n" + code + "\n")
     with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False, encoding="utf-8") as f:
         f.write(js)
@@ -960,6 +967,36 @@ class ServerTests(TempBoard):
         status, _, _ = self.request("PUT", "/api/board", b"{}", {"Host": "evil.example", "Content-Type": "application/json"})
         self.assertEqual(status, 403)
         self.assertEqual(self.raw(), before)
+
+    def browser_move_after_agent(self, state, *agent_args):
+        """The page loads the board, an agent runs a command, then the human moves DV-02 to `state`."""
+        code = (
+            "const base = `http://127.0.0.1:${input.port}/`;\n"
+            "const fetch = (url, opts) => globalThis.fetch(new URL(url, base), opts);\n"
+            "(async () => {\n"
+            "  const store = serverStore(), seen = await store.load();\n"
+            "  require('child_process').execFileSync(input.python, [input.script, ...input.agent], { cwd: input.dir });\n"
+            "  const t = seen.tasks.find((x) => x.id === 'DV-02');\n"
+            "  try { await store.save(ops.state(t.id, t.state, input.state), seen); process.stdout.write('saved'); }\n"
+            "  catch (e) { process.stdout.write(`refused: ${e.message}`); }\n"
+            "})();"
+        )
+        sections = [("function serverStore()", "function fileStore("), ("function mustFind(", "\n// ----")]
+        args = {"port": self.port, "python": sys.executable, "script": SCRIPT, "dir": self.dir,
+                "state": state, "agent": list(agent_args)}
+        return run_html_js(self, code, json.dumps(args), sections)
+
+    def test_a_browser_move_does_not_overwrite_an_agent_move(self):
+        self.run_cli("start", "DV-02")
+        out = self.browser_move_after_agent("todo", "finish", "DV-02", "-m", "Done; tests pass")
+        self.assertEqual(out, "refused: DV-02 is in Review now, not Doing")
+        self.assertEqual(self.get("DV-02")["state"], "review")
+
+    def test_a_browser_move_is_replayed_over_other_agent_changes(self):
+        out = self.browser_move_after_agent("doing", "note", "DV-03", "agent wrote first")
+        self.assertEqual(out, "saved")
+        self.assertEqual(self.get("DV-02")["state"], "doing")
+        self.assertEqual(self.get("DV-03")["notes"][0]["text"], "agent wrote first")
 
     def test_browser_writes_are_canonical(self):
         board = json.loads(self.raw())
