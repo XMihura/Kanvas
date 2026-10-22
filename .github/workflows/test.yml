@@ -1,0 +1,65 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / Python ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python: ["3.8", "3.13"]
+        exclude:
+          - os: macos-latest
+            python: "3.8"
+        include:
+          - os: macos-latest
+            python: "3.10"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: python -m unittest discover -s tests -v
+
+  package:
+    name: installed command / ${{ matrix.os }} / Python ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python: ["3.8", "3.13"]
+        exclude:
+          - os: macos-latest
+            python: "3.8"
+        include:
+          - os: macos-latest
+            python: "3.10"
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: astral-sh/setup-uv@v10.3.1
+        with:
+          enable-cache: false
+      - name: Build the package
+        run: uv build
+      - name: Install it as a tool
+        run: |
+          uv tool install --python ${{ matrix.python }} dist/*.whl
+          uv tool dir --bin >> "$GITHUB_PATH"
+      - name: Check the installed command
+        run: python tests/check_installed.py

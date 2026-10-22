@@ -1,0 +1,64 @@
+[build-system]
+requires = ["hatchling>=1.27", "hatch-fancy-pypi-readme>=24.1"]
+build-backend = "hatchling.build"
+
+[project]
+name = "kanvas-board"
+dynamic = ["version", "readme"]
+description = "A task board you share with your AI coding agents"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "XMihura" }]
+requires-python = ">=3.8"
+keywords = ["kanban", "tasks", "planning", "ai agents", "claude", "codex", "cursor"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Environment :: Web Environment",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Software Development",
+]
+
+[project.urls]
+Homepage = "https://github.com/XMihura/Kanvas"
+Changelog = "https://github.com/XMihura/Kanvas/blob/main/CHANGELOG.md"
+Issues = "https://github.com/XMihura/Kanvas/issues"
+
+[project.scripts]
+kanvas = "kanvas_board:main"
+kanvas-board = "kanvas_board:main"
+
+[tool.hatch.version]
+path = "kanvas.py"
+
+# The README links to images and files in the repository by relative paths,
+# which PyPI cannot resolve; its PyPI copy points them at GitHub's main branch.
+[tool.hatch.metadata.hooks.fancy-pypi-readme]
+content-type = "text/markdown"
+
+[[tool.hatch.metadata.hooks.fancy-pypi-readme.fragments]]
+path = "README.md"
+
+[[tool.hatch.metadata.hooks.fancy-pypi-readme.substitutions]]
+pattern = '(\]\(|src=")img/'
+replacement = '\1https://raw.githubusercontent.com/XMihura/Kanvas/main/img/'
+
+[[tool.hatch.metadata.hooks.fancy-pypi-readme.substitutions]]
+pattern = '\]\((?!https?://|#)'
+replacement = '](https://github.com/XMihura/Kanvas/blob/main/'
+
+# The wheel holds the same three files that `init` copies into a project,
+# side by side, so kanvas.py finds kanvas.html and SKILL.md next to itself.
+[tool.hatch.build.targets.wheel]
+bypass-selection = true
+
+[tool.hatch.build.targets.wheel.force-include]
+"kanvas.py" = "kanvas_board/__init__.py"
+"kanvas.html" = "kanvas_board/kanvas.html"
+"skill/SKILL.md" = "kanvas_board/SKILL.md"
+
+[tool.hatch.build.targets.sdist]
+include = ["/kanvas.py", "/kanvas.html", "/skill/SKILL.md", "/README.md", "/LICENSE", "/CHANGELOG.md"]

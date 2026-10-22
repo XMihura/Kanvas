@@ -1,0 +1,194 @@
+{
+  "kanvas": 1,
+  "title": "Tetris",
+  "groups": [
+    {
+      "id": "ST",
+      "name": "Setup"
+    },
+    {
+      "id": "EN",
+      "name": "Engine"
+    },
+    {
+      "id": "GM",
+      "name": "Gameplay"
+    },
+    {
+      "id": "UI",
+      "name": "UI"
+    },
+    {
+      "id": "PL",
+      "name": "Polish"
+    }
+  ],
+  "tasks": [
+    {
+      "id": "ST-01",
+      "title": "Project scaffold",
+      "state": "todo",
+      "group": "ST",
+      "desc": "Create `index.html`, `style.css` and `src/main.js` (ES modules, no build step). Page loads with a blank `<canvas>`."
+    },
+    {
+      "id": "ST-02",
+      "title": "Dev server and lint",
+      "state": "proposed",
+      "group": "ST",
+      "deps": ["ST-01"],
+      "desc": "Document `python -m http.server` in the README; add a minimal ESLint config."
+    },
+    {
+      "id": "EN-01",
+      "title": "Board model",
+      "state": "todo",
+      "group": "EN",
+      "deps": ["ST-01"],
+      "desc": "10x20 grid as a typed array, with `get`, `set`, `isInside` and `clone`. Unit-testable without the DOM."
+    },
+    {
+      "id": "EN-02",
+      "title": "Tetromino definitions",
+      "state": "todo",
+      "group": "EN",
+      "deps": ["ST-01"],
+      "desc": "The seven pieces (I, O, T, S, Z, J, L) with their four rotation states and colors."
+    },
+    {
+      "id": "EN-03",
+      "title": "Collision detection",
+      "state": "todo",
+      "group": "EN",
+      "deps": ["EN-01", "EN-02"],
+      "desc": "`collides(board, piece, x, y, rotation)` covering walls, floor and settled blocks."
+    },
+    {
+      "id": "EN-04",
+      "title": "SRS rotation with wall kicks",
+      "state": "todo",
+      "group": "EN",
+      "deps": ["EN-03"],
+      "desc": "Super Rotation System kick tables for JLSTZ and I pieces."
+    },
+    {
+      "id": "EN-05",
+      "title": "Line clearing",
+      "state": "todo",
+      "group": "EN",
+      "deps": ["EN-01"],
+      "desc": "Detect full rows, remove them and shift the rows above down. Return the number of cleared lines."
+    },
+    {
+      "id": "EN-06",
+      "title": "7-bag randomizer",
+      "state": "proposed",
+      "group": "EN",
+      "deps": ["EN-02"],
+      "desc": "Shuffle all seven pieces into a bag and deal from it, refilling when empty."
+    },
+    {
+      "id": "GM-01",
+      "title": "Game loop and gravity",
+      "state": "todo",
+      "group": "GM",
+      "deps": ["EN-03"],
+      "desc": "`requestAnimationFrame` loop with a fixed-step gravity timer; lock delay of 500 ms."
+    },
+    {
+      "id": "GM-02",
+      "title": "Keyboard controls",
+      "state": "todo",
+      "group": "GM",
+      "deps": ["GM-01", "EN-04"],
+      "desc": "Left/right with DAS and ARR, soft drop, hard drop, rotate CW/CCW, hold."
+    },
+    {
+      "id": "GM-03",
+      "title": "Hold piece",
+      "state": "proposed",
+      "group": "GM",
+      "deps": ["GM-02", "EN-06", "EN-07"],
+      "desc": "Swap the active piece into the hold slot, once per drop."
+    },
+    {
+      "id": "GM-04",
+      "title": "Scoring and levels",
+      "state": "todo",
+      "group": "GM",
+      "deps": ["EN-05", "GM-01"],
+      "desc": "Guideline scoring (single to tetris, soft/hard drop points). Level up every 10 lines; gravity speeds up."
+    },
+    {
+      "id": "GM-05",
+      "title": "Game over and restart",
+      "state": "proposed",
+      "group": "GM",
+      "deps": ["GM-01"],
+      "desc": "Top-out detection when a new piece spawns colliding; overlay with a restart button."
+    },
+    {
+      "id": "UI-01",
+      "title": "Board renderer",
+      "state": "proposed",
+      "group": "UI",
+      "deps": ["EN-01", "EN-02"],
+      "desc": "Draw settled blocks and the active piece on the canvas, scaled to the window."
+    },
+    {
+      "id": "UI-02",
+      "title": "Ghost piece",
+      "state": "proposed",
+      "group": "UI",
+      "deps": ["UI-01", "EN-03"],
+      "desc": "Translucent preview of where the active piece will land."
+    },
+    {
+      "id": "UI-03",
+      "title": "Next queue and hold panel",
+      "state": "proposed",
+      "group": "UI",
+      "deps": ["UI-01", "GM-03"],
+      "desc": "Side panels showing the next five pieces and the held piece."
+    },
+    {
+      "id": "UI-04",
+      "title": "HUD: score, level, lines",
+      "state": "proposed",
+      "group": "UI",
+      "deps": ["GM-04", "UI-01"],
+      "desc": "Text panel updated each frame from the game state."
+    },
+    {
+      "id": "PL-01",
+      "title": "Sound effects",
+      "state": "proposed",
+      "group": "PL",
+      "deps": ["GM-02", "EN-05"],
+      "desc": "Web Audio beeps for move, rotate, lock, line clear and tetris. Mute toggle."
+    },
+    {
+      "id": "PL-02",
+      "title": "High score persistence",
+      "state": "proposed",
+      "group": "PL",
+      "deps": ["GM-05", "GM-04"],
+      "desc": "Store the top 10 scores in `localStorage`; show them on the game-over overlay."
+    },
+    {
+      "id": "PL-03",
+      "title": "Mobile touch controls",
+      "state": "proposed",
+      "group": "PL",
+      "deps": ["GM-02"],
+      "desc": "Swipe to move and drop, tap to rotate. Optional; decide after playtesting."
+    },
+    {
+      "id": "EN-07",
+      "title": "Piece lock and line clear integration",
+      "state": "todo",
+      "group": "EN",
+      "deps": ["EN-03", "EN-05", "GM-01"]
+    }
+  ]
+}

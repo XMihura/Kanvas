@@ -1,4 +1,6 @@
-.obsidian/
-.claude/
 __pycache__/
 *.pyc
+*.lock
+*.tmp
+/dist/
+.claude/

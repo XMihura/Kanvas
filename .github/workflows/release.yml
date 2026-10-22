@@ -1,0 +1,110 @@
+# Publishing a GitHub release uploads that version to PyPI. A release marked as
+# a pre-release publishes a test version such as 0.4.0rc1. Pull requests that
+# change this file, and runs started by hand (Actions -> release -> Run workflow),
+# build and check without uploading.
+# PyPI trusts this file by name and the `pypi` environment (trusted publishing).
+name: release
+
+on:
+  release:
+    types: [published]
+  pull_request:
+    paths: [.github/workflows/release.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: astral-sh/setup-uv@v10.3.1
+        with:
+          enable-cache: false
+      - name: Check the version
+        env:
+          EVENT: ${{ github.event_name }}
+          TAG: ${{ github.event.release.tag_name }}
+          PRERELEASE: ${{ github.event.release.prerelease }}
+        run: |
+          python - <<'EOF'
+          import os, re, sys
+          version = re.search(r'^VERSION = "([^"]+)"', open("kanvas.py", encoding="utf-8").read(), re.M).group(1)
+          problems = []
+          if open("VERSION", encoding="utf-8").read().strip() != version:
+              problems.append(f"the VERSION file does not say {version}, as kanvas.py does")
+          if os.environ["EVENT"] == "release":
+              if os.environ["TAG"] != f"v{version}":
+                  problems.append(f"the tag is {os.environ['TAG']}, but kanvas.py says {version}: tag it v{version}")
+              testing = bool(re.search(r"(a|b|rc)\d+$", version))
+              if testing != (os.environ["PRERELEASE"] == "true"):
+                  problems.append(f"{version} is a {'test' if testing else 'final'} version, so the release must "
+                                  f"{'' if testing else 'not '}be marked as a pre-release")
+          for p in problems:
+              print(f"::error::{p}")
+          sys.exit(1 if problems else 0)
+          EOF
+      - name: Build the package
+        run: uv build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  check:
+    name: installed command / ${{ matrix.os }} / Python ${{ matrix.python }}
+    needs: build
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python: ["3.8", "3.13"]
+        exclude:
+          - os: macos-latest
+            python: "3.8"
+        include:
+          - os: macos-latest
+            python: "3.10"
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: astral-sh/setup-uv@v10.3.1
+        with:
+          enable-cache: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - name: Install the built package as a tool
+        run: |
+          uv tool install --python ${{ matrix.python }} dist/*.whl
+          uv tool dir --bin >> "$GITHUB_PATH"
+      - name: Check the installed command
+        run: python tests/check_installed.py
+
+  publish:
+    needs: check
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/kanvas-board/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1

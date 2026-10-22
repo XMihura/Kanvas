@@ -1,0 +1,192 @@
+{
+  "kanvas": 1,
+  "title": "Weather dashboard",
+  "groups": [
+    {
+      "id": "RS",
+      "name": "Research"
+    },
+    {
+      "id": "BE",
+      "name": "Backend"
+    },
+    {
+      "id": "FE",
+      "name": "Frontend"
+    },
+    {
+      "id": "LN",
+      "name": "Launch"
+    }
+  ],
+  "tasks": [
+    {
+      "id": "RS-01",
+      "title": "Compare weather APIs",
+      "state": "done",
+      "group": "RS",
+      "desc": "Pick a forecast provider.\n\n- Free tier of at least 1000 calls a day\n- Hourly forecast for 7 days\n- Clear terms for caching",
+      "notes": [
+        {
+          "at": "2026-10-13T09:12:00Z",
+          "by": "claude",
+          "text": "Compared Open-Meteo, OpenWeather and WeatherAPI. **Open-Meteo** wins: no key, hourly data for 16 days, caching allowed. Table in `docs/apis.md`."
+        },
+        {
+          "at": "2026-10-13T10:02:00Z",
+          "by": "human",
+          "text": "Agreed, go with Open-Meteo."
+        }
+      ]
+    },
+    {
+      "id": "RS-02",
+      "title": "Sketch the dashboard layout",
+      "state": "done",
+      "group": "RS",
+      "desc": "One screen: current conditions on top, hourly strip, 7-day list."
+    },
+    {
+      "id": "BE-01",
+      "title": "Scaffold the API server",
+      "state": "done",
+      "group": "BE",
+      "deps": ["RS-01"],
+      "notes": [
+        {
+          "at": "2026-10-14T08:40:00Z",
+          "by": "claude",
+          "text": "FastAPI app with `/health`, settings from env, pytest wired into CI."
+        }
+      ]
+    },
+    {
+      "id": "BE-02",
+      "title": "Fetch and cache forecasts",
+      "state": "review",
+      "group": "BE",
+      "deps": ["BE-01"],
+      "desc": "`GET /forecast?lat=..&lon=..` proxies Open-Meteo.\n\n- [x] Normalise units to metric\n- [x] Cache responses for 10 minutes\n- [ ] Decide what to do when the upstream is down",
+      "notes": [
+        {
+          "at": "2026-10-18T15:20:00Z",
+          "by": "claude",
+          "text": "Started. Plan: httpx client, in-memory TTL cache keyed by rounded coordinates."
+        },
+        {
+          "at": "2026-10-19T11:05:00Z",
+          "by": "claude",
+          "text": "Done: `/forecast` returns normalised hourly and daily data, cached for 10 minutes (hit rate 94% in the load test). 23 tests pass. When the upstream fails the endpoint returns 502 for now; BE-05 proposes retries."
+        }
+      ]
+    },
+    {
+      "id": "BE-03",
+      "title": "City search endpoint",
+      "state": "doing",
+      "group": "BE",
+      "deps": ["BE-01"],
+      "desc": "`GET /cities?q=par` returns up to 8 matches with coordinates, using the Open-Meteo geocoding API.",
+      "notes": [
+        {
+          "at": "2026-10-19T13:30:00Z",
+          "by": "codex",
+          "text": "Working on it: geocoding client done, adding debounce-friendly caching next."
+        }
+      ]
+    },
+    {
+      "id": "BE-04",
+      "title": "Rate limiting",
+      "state": "todo",
+      "group": "BE",
+      "deps": ["BE-02"],
+      "desc": "60 requests per minute per IP, with a `Retry-After` header."
+    },
+    {
+      "id": "BE-05",
+      "title": "Retry failed upstream calls",
+      "state": "proposed",
+      "group": "BE",
+      "deps": ["BE-02"],
+      "desc": "Retry Open-Meteo calls up to 3 times with exponential backoff, then serve the last cached forecast marked as stale."
+    },
+    {
+      "id": "FE-01",
+      "title": "Set up the frontend build",
+      "state": "done",
+      "group": "FE",
+      "deps": ["RS-02"],
+      "notes": [
+        {
+          "at": "2026-10-14T12:10:00Z",
+          "by": "codex",
+          "text": "Vite + TypeScript, ESLint, Vitest. `npm run dev` proxies `/api` to the backend."
+        }
+      ]
+    },
+    {
+      "id": "FE-02",
+      "title": "Forecast cards",
+      "state": "doing",
+      "group": "FE",
+      "deps": ["FE-01", "BE-01"],
+      "desc": "Current conditions card and the 7-day list, following the RS-02 sketch.",
+      "notes": [
+        {
+          "at": "2026-10-19T14:02:00Z",
+          "by": "claude",
+          "text": "Current conditions card done with mocked data; wiring the 7-day list."
+        }
+      ]
+    },
+    {
+      "id": "FE-03",
+      "title": "City search box",
+      "state": "todo",
+      "group": "FE",
+      "deps": ["FE-02", "BE-03"],
+      "desc": "Autocomplete backed by `/cities`, keyboard navigation, remembers the last city."
+    },
+    {
+      "id": "FE-04",
+      "title": "Dark mode",
+      "state": "todo",
+      "group": "FE",
+      "deps": ["FE-01"],
+      "desc": "Follow the system setting, with a toggle in the header."
+    },
+    {
+      "id": "FE-05",
+      "title": "Offline banner",
+      "state": "proposed",
+      "group": "FE",
+      "deps": ["FE-02"],
+      "desc": "Show the last forecast with a banner when the network is down."
+    },
+    {
+      "id": "LN-01",
+      "title": "Write the README",
+      "state": "todo",
+      "group": "LN",
+      "deps": ["BE-02", "FE-02"],
+      "desc": "Setup, configuration, screenshots."
+    },
+    {
+      "id": "LN-02",
+      "title": "Deploy to production",
+      "state": "todo",
+      "group": "LN",
+      "deps": ["LN-01", "BE-04", "FE-03"],
+      "desc": "Docker image, deploy on Fly.io, custom domain."
+    },
+    {
+      "id": "LN-03",
+      "title": "Uptime monitoring",
+      "state": "proposed",
+      "group": "LN",
+      "deps": ["LN-02"],
+      "desc": "Ping `/health` every minute and alert on two failures in a row."
+    }
+  ]
+}

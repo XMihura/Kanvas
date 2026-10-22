@@ -1,214 +1,241 @@
+<img src="img/icon.svg" alt="" width="72">
+
 # Kanvas
 
-Plan, track, and coordinate projects between humans and AI agents on an [Obsidian](https://obsidian.md) Canvas board.
+A task board you share with your AI coding agents. Agents plan and report through a small CLI; you approve, steer and review in an interactive board in your browser.
 
-![Simple diagram of the idea](./img/1-diagram.png)
+One JSON file, one Python script, one HTML page. No accounts, no build step, no dependencies.
 
----
+![The dependency graph of a sample project](img/graph.png)
 
-## Why This Exists
+## Why
 
-AI agents work best in their CLI sandboxes — that's what companies optimize their RL training for. But you still need to **plan the project**, break it into tasks, see what depends on what, and track progress as you and your agents work through it.
+AI agents do their best work in a terminal, but a project needs a plan that outlives a single chat: what is left, what depends on what, what was decided and why. Kanvas keeps that plan in `kanvas.json` next to your code, where you and any number of agents work on it together.
 
-Kanvas gives you a visual project board in Obsidian Canvas where you lay out the plan, and agents interact with it through a CLI tool.
+- **You stay in control.** Agents propose tasks and you approve them. Agents finish tasks and you review them. Only you mark work done, unless you hand a chain of tasks over with YOLO, and even then the task at its end comes back to you for review.
+- **Agents cannot break the board.** They change it through `kanvas.py`, which enforces the workflow and rejects invalid moves with a clear message.
+- **Live.** Agent changes appear in the browser within a second, and your edits are on disk immediately for the agent's next command.
+- **Agent-agnostic.** Claude Code, Codex, Cursor, Gemini CLI, OpenCode, GitHub Copilot, or anything that runs shell commands. Use several at once; notes record who did what.
+- **Git-friendly.** The board is plain, stably formatted JSON. Commit it with the code and your history shows how the plan evolved.
 
-**The goals:**
-- **Simple.** No accounts, no SaaS, no build step. It's literally just a prompt, a python CLI tool for the agents and a json file for the canvas. Clone, run `init`, start planning. The whole system is a workflow convention on top of tools you already have.
-- **Both sides contribute.** You add tasks, set priorities, draw dependencies. Agents propose tasks, do work, report back. The board is a shared space, not a one-way instruction sheet.
-- **Agent-agnostic.** Works with Claude Code, Codex, Gemini CLI, or anything that can run a shell command. Switch agents mid-project, use multiple at once — the board doesn't care.
-- **Git-friendly.** `.canvas` files are JSON. They diff, merge, and version like any other file in your repo.
-- **Flexible.** Some tasks are for agents, some are for you (hardware, design, manual testing). Same board, same colors, same flow. Use one agent or five, swap them mid-project, or do everything yourself — the board adapts to how you work, not the other way around.
+## Quick start
 
-Obsidian Canvas already gives you cards, groups, arrows, and colors. Kanvas adds a workflow on top: color-coded task states, dependency tracking, and a CLI that keeps agents from breaking the rules.
+Kanvas works on Linux, macOS and Windows. You need a browser and [uv](https://docs.astral.sh/uv/), which installs Kanvas and downloads Python too if your computer has none.
 
-### What's in this project
-
-1. **The workflow prompt** (`RULES.md`) — the core. Defines task states, dependencies, and what agents can and cannot do. Copy the agent instructions (`CLAUDE.md` / `AGENTS.md`) into your project and any LLM can follow it.
-
-2. **The CLI tool** (`canvas-tool.py`) — keeps agents honest. Enforces valid transitions, dependency checks, and blocked states instead of letting agents edit `.canvas` JSON directly. Python 3.7+, zero dependencies.
-
-3. **The Canvas Watcher plugin** (optional) — lints the board when *you* edit it in Obsidian. Auto-manages blocked states, catches circular deps, flags warnings. Not required.
-
----
-
-## How It Works
-
-Cards have colors. Colors are states. Arrows are dependencies.
-
-| Color  | State | Who moves it |
-|--------|-------|-------------|
-| 🟣 Purple | Proposed | Agent |
-| 🔴 Red | To Do | Human |
-| 🟠 Orange | Doing | Agent or Human |
-| 🔵 Cyan | Review | Agent |
-| 🟢 Green | Done | Human |
-| ⬜ Gray | Blocked | Automatic |
-
-```
-Propose → Purple → Approve → Red → Start → Orange → Finish → Cyan → Verify → Green
-```
-
-If a task depends on something that isn't green yet, it's gray (blocked). When the dependency is done, it flips to red automatically.
-
-### Example project board
-
-![Example project board](./img/2-example.png)
----
-
-## Getting Started
-
-**Requirements:** Python 3.7+, Obsidian, Git. Works on Windows, macOS, and Linux.
-
-**Optional:** Node.js — only needed if you want to run the standalone `canvas-watcher.js`. Not required for the CLI tool or the Obsidian plugin (which `init` installs with Python).
-
-### Setup
-
-Clone Kanvas **outside** your project — it's a separate tool, not something you nest inside your repo:
+**1. Install uv** (once). On macOS and Linux, run this in a terminal:
 
 ```bash
-# Example: both repos live side by side
-~/repos/Kanvas/          # ← clone Kanvas here
-~/repos/my-project/      # ← your actual project
+curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
-Then open your project folder in Obsidian (so it creates the `.obsidian/` directory), and run `init` pointing at your project:
+On Windows, run this in PowerShell:
+
+```powershell
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+```
+
+Then close the terminal and open a new one.
+
+**2. Install Kanvas** (once):
 
 ```bash
-python ~/repos/Kanvas/canvas-tool.py init ~/repos/my-project
+uv tool install kanvas-board
 ```
 
-This copies everything you need into the target directory:
-- `canvas-tool.py` — the CLI tool
-- `CLAUDE.md` / `AGENTS.md` — agent instructions
-- `RULES.md` — workflow protocol
-- `Project.canvas` — blank board template (only if no `.canvas` file exists yet)
-- **Canvas Watcher plugin** — automatically installed if `.obsidian/` exists
+This gives you the `kanvas` command. If the terminal later cannot find it, run `uv tool update-shell` and open a new terminal.
 
-To skip the plugin install, pass `--no-plugin`:
+**3. Open the board.** Go to your project's folder and run:
 
 ```bash
-python Kanvas/canvas-tool.py init /path/to/your-project --no-plugin
+cd path/to/your-project
+kanvas init
+kanvas serve
 ```
 
-> **Note:** The Canvas Watcher plugin can only be installed if `.obsidian/` exists in your project — and that directory is created when Obsidian first opens the folder as a vault. If you run `init` before opening Obsidian, the plugin step will be skipped. Just open the folder in Obsidian and run `init` again to finish the install.
+`init` creates the board, `kanvas.json`, and installs the agent skill in `.agents/skills/kanvas/`: instructions for your agents and their own copy of Kanvas, so agents need nothing installed. Commit `kanvas.json` and `.agents/` with your project.
 
-#### Manual setup
-
-Alternatively, drop these files into your project repo yourself:
-
-1. **`canvas-tool.py`** — the CLI tool
-2. **`CLAUDE.md`** / **`AGENTS.md`** — agent instructions (pick one for your platform)
-3. **A `.canvas` file** — copy `examples/blank.canvas` as a starting point, or `examples/sample-project.canvas` to see a full example
-
-| Platform | Instruction file |
-|----------|---------|
-| Claude Code | `CLAUDE.md` in project root |
-| Codex | `AGENTS.md` in project root |
-| Gemini CLI | `AGENTS.md` renamed to `GEMINI.md` |
-| Others | Paste `AGENTS.md` content into your agent's system prompt |
-
-### Recommended workflow
-
-1. **Plan first.** Open the `.canvas` in Obsidian. Add tasks yourself, or ask your agent to interview you about the project and propose a plan using `batch`. Spend time here — a good plan saves time later.
-
-2. **Review the board.** Approve proposals (purple → red), rearrange, add dependencies by drawing arrows. Get the canvas looking right before you start executing.
-
-3. **Execute with your agent.** The agent picks a red task, works on it, marks it for review. You verify and mark it green.
-
-4. **Commit per task.** After each task is done, commit the code *and* the `.canvas` file together. Your git history mirrors the project plan — you can check out any commit and see the board state at that point.
-
-5. **Repeat.** As tasks complete, blocked ones unlock. The board evolves as the project progresses.
-
----
-
-## CLI Reference
+Agents that support skills pick the skill up automatically, and `init` creates an `AGENTS.md` that points the others to it. If your project already has an `AGENTS.md`, `init` leaves it untouched and, when the file does not mention the skill yet, prints this line for you to add:
 
 ```
-python canvas-tool.py init [TARGET_DIR] [--no-plugin] # set up Kanvas in a project
-python canvas-tool.py "<file>.canvas" <command> [args]
+Plan and track work on the Kanvas board; follow .agents/skills/kanvas/SKILL.md.
 ```
 
-**Setup:**
+`serve` opens the board in your browser. Keep it running while you work; Ctrl+C stops it.
 
-| Command | Description |
-|---------|-------------|
-| `init [DIR] [--no-plugin]` | Initialize Kanvas in a directory (copies files, optionally installs plugin) |
+**4. Ask your agent:**
 
-**Read:**
+> Interview me about this project and plan it on the Kanvas board.
 
-| Command | Description |
-|---------|-------------|
-| `status` | Board overview |
-| `show <ID>` | Task detail with dependencies |
-| `list [STATE\|GROUP]` | Filter by state or group |
-| `ready` | Red tasks with all deps met |
-| `blocked` | Gray tasks and what blocks them |
-| `blocking` | Tasks that block others |
-| `dump` | Raw JSON |
+The plan arrives as proposals. Approve the ones you want, and tell the agent to start working.
 
-**Work:**
+### Let your agent set it up
 
-| Command | Transition |
-|---------|-----------|
-| `start <ID>` | Red → Orange |
-| `finish <ID>` | Orange → Cyan |
-| `pause <ID>` | Orange → Red |
-| `edit <ID> "<text>"` | Update description (orange only) |
+With uv installed (step 1), you can hand steps 2 to 4 to your agent. Open Claude Code, Codex, Cursor, Gemini CLI or OpenCode in your project's folder and paste:
 
-**Add:**
+> Set up Kanvas in this project with `uvx kanvas-board init` (https://github.com/XMihura/Kanvas), then follow `.agents/skills/kanvas/SKILL.md` and plan the work with me on the board.
 
-| Command | Description |
-|---------|-------------|
-| `propose <GROUP> "<TITLE>" "<DESC>" [--depends-on ID ...]` | New task (purple) |
-| `propose-group "<LABEL>"` | New group |
-| `batch` | Bulk-add from JSON on stdin |
-| `add-dep <FROM> <TO>` | New dependency edge |
-| `normalize` | Assign IDs, fix blocked states |
+The agent creates the board, looks at what the project already holds, asks you what it needs to know and proposes a plan. To watch the board, run `uvx kanvas-board serve` in the project's folder, or `kanvas serve` if you installed Kanvas. Codex keeps `.agents/` read-only in its sandbox, so it asks your permission to run `init` outside it. Gemini CLI loads the skill only in folders you have marked as trusted, and asks before using it.
 
-No delete, no done, no raw JSON editing — by design.
+### Other ways to install and update
 
----
-
-## Optional: Canvas Watcher Plugin
-
-Lints the board when you edit it in Obsidian. Updates blocked states, catches circular deps, flags warnings on save. Not required — the CLI handles the agent side independently.
-
-The plugin is installed automatically by `init` (no extra dependencies). To install manually:
+Try Kanvas without installing it:
 
 ```bash
-node canvas-watcher-plugin/install.js    # requires Node.js
-# then enable in Settings → Community plugins → Canvas Watcher
+uvx kanvas-board init
+uvx kanvas-board serve
 ```
 
-Or run standalone (requires Node.js): `node canvas-watcher.js` (watch mode) or `node canvas-watcher.js "Project.canvas"` (one-shot).
+Install with pipx, or straight from GitHub without PyPI:
 
-### Auto-layout
-
-The plugin adds two layout buttons to the Obsidian canvas toolbar:
-
-- **Vertical layout** (lines + down arrow) — arrange cards top-to-bottom by dependency depth
-- **Horizontal layout** (lines + right arrow) — arrange cards left-to-right by dependency depth
-
-A **layer-gap slider** below the buttons controls the spacing between dependency levels. Drag up to decrease spacing, drag down to increase it. 
-
----
-
-## Project Structure
-
-```
-kanvas/
-├── canvas-tool.py             # CLI tool (Python 3.7+, zero deps)
-├── RULES.md                   # Full workflow protocol
-├── CLAUDE.md                  # Agent instructions (Claude Code)
-├── AGENTS.md                  # Agent instructions (Codex / Gemini / others)
-├── canvas-watcher.js          # Watcher/linter (optional, Node.js)
-├── canvas-watcher-plugin/     # Obsidian plugin (optional)
-└── examples/
-    ├── blank.canvas           # Empty template with legend
-    └── sample-project.canvas  # Example board
+```bash
+pipx install kanvas-board
+uv tool install https://github.com/XMihura/Kanvas/archive/refs/heads/main.zip
 ```
 
-Full protocol docs: [RULES.md](RULES.md)
+Without uv, you need Python 3.8 or newer. [Download](https://github.com/XMihura/Kanvas/archive/refs/heads/main.zip) or clone this repository and run its `kanvas.py` in your project's folder; from then on, use the project's copy (type `python3` where `python` is missing):
+
+```bash
+python path/to/kanvas.py init
+python .agents/skills/kanvas/kanvas.py serve
+```
+
+To update, run this, then `kanvas init` again in each project to refresh the copy its agents use:
+
+```bash
+uv tool upgrade kanvas-board
+```
+
+`kanvas status` and `kanvas serve` remind you when a project's copy differs from the installed `kanvas`: they suggest `kanvas init` when the copy is older, and `uv tool upgrade kanvas-board` when it is newer.
+
+## How it works
+
+```mermaid
+flowchart LR
+    agent["AI agents"] -- "kanvas.py start / finish / propose / note" --> board[("kanvas.json")]
+    you["You"] -- "browser" --> page["kanvas.html"]
+    page <-- "kanvas serve" --> board
+```
+
+Every task moves through five states. A to-do task whose dependencies are unfinished shows as blocked, and becomes ready by itself once they are done.
+
+| State | Color | Who moves it there |
+|-------|-------|--------------------|
+| Proposed | purple | An agent proposes it |
+| To do | blue (gray while blocked) | You approve it |
+| Doing | orange | An agent starts it |
+| Review | pink | The agent finishes it, with a summary of what it did |
+| Done | green | You accept it, or send it back with feedback |
+
+Agents may propose tasks and groups, start ready tasks, finish or pause tasks in progress, add notes and add dependencies. Until you approve a proposal, they may also revise, withdraw or rewire it, so you can reshape a plan together in the conversation and the board follows. Everything else belongs to you: approving, changing approved tasks, marking done. Feedback you leave when sending a task back becomes a note the agent reads when it picks the task up again.
+
+## The board
+
+![Reviewing a finished task](img/review.png)
+
+- **Graph view.** One swimlane per group, laid out by dependency depth, flowing left to right or top to bottom (switch under Display, or press `L`). The automatic layout orders the cards for fewer crossings and straighter arrows, and arrows that skip levels run between cards. Set the card order to Manual under Display (or press `M`) to order the cards yourself: drag a card up or down within its level, or into another swimlane to change its group, and drag a swimlane by its name to reorder the groups. Your order is saved in `kanvas.json`, and right-clicking empty space offers to start from the automatic order. The spacing slider under Display, or `[` and `]`, compresses or extends the space between dependency levels. Hover or select a task to highlight everything it depends on and everything waiting for it. A dependency that another dependency already implies (C needs A and B, and B needs A) stays in the file but is drawn only while A or C is selected, as a dashed arrow. Each card has a dot on its incoming and outgoing side: drag one onto another card to add a dependency in that direction (cycles are refused). Click an arrow to open or remove the dependency.
+- **Board view.** Kanban columns by state. Drag cards between columns, or approve every proposal at once.
+- **New tasks.** Choose what a new task depends on and what it blocks by searching, or with **Pick on graph**: click cards to add or remove them, then press Done (or Enter), or Cancel (or Escape) to keep the earlier choice. Choices that would create a cycle are dimmed, with the reason on hover.
+- **Task panel.** Title, Markdown description, state, group, dependencies and the notes timeline. Approve, start, send to review, mark done, or send back with feedback.
+- **Right-click menus.** On a card: state actions, a new task that depends on it or blocks it, adding and removing dependencies, copying the ID, deleting. On an arrow (left or right click): the two tasks it connects are highlighted and shown in the menu; click either one to open it, or remove the connection. On empty space: a new task in that group, a new group, or deleting that group (its tasks stay without a group unless you choose to delete them too).
+- **Undo and redo.** Ctrl+Z undoes your last change in the browser, Ctrl+Shift+Z or Ctrl+Y redoes it, and the arrows next to New task do the same. Changes agents made in the meantime are kept: an undo only touches what your change touched, and refuses if an agent has changed that since. Inside a text field, Ctrl+Z undoes typing as usual.
+- **YOLO.** "YOLO up to here…" on a card (right-click menu or task panel) hands that task and everything it depends on to the agents: they may start the chain's proposals without approval, and the tasks they finish on the way are done without review. The YOLO task itself comes back to you for review, so a YOLO run ends with one review of the result, and YOLO stops applying once that task is in review. YOLO on a task further along takes over the chain: the YOLO marks inside it go, so only the last task comes back for review. Turning it on approves the chain's current proposals and marks the other tasks waiting for review as done. The task carries a YOLO tag and the tasks it covers a lightning icon; the same menu turns it off.
+- **Everything else.** Filter by state, search (press `/`), hide finished work, groups with their own ID prefixes (from the menu on the board name), light, dark or system theme, keyboard shortcuts (press `?`), arrow keys to move from card to card and Enter to move into its panel (Tab goes round the panel, Escape comes back out), and links: `#BE-02` in the URL opens that task.
+
+![The board view in dark mode](img/board-dark.png)
+
+There are three ways to open it:
+
+| | |
+|---|---|
+| `kanvas serve` | Any browser, live two-way sync. Concurrent changes from agents and the browser merge automatically. |
+| Open `kanvas.html` directly | The project has a copy in `.agents/skills/kanvas/`. In Chrome or Edge, choose your `kanvas.json` and the page reads and writes it in place, with live updates. Other browsers edit a copy in the tab; **Save** downloads it. |
+| `kanvas export` | A single self-contained, read-only HTML snapshot to share or attach to a pull request. |
+
+## CLI
+
+You type `kanvas <command>`; `kanvas -h` lists the commands and `kanvas <command> -h` explains one. Agents run the same commands through the project's copy, `python .agents/skills/kanvas/kanvas.py <command>`, so cloud agents and teammates who never installed Kanvas can work on the board too. Messages name the command you typed: `kanvas ...` for the installed command, `python .agents/skills/kanvas/kanvas.py ...` for the project's copy.
+
+| Command | Purpose |
+|---------|---------|
+| `status` | Overview: doing, waiting for review, ready, blocked, proposed, problems |
+| `ready` / `blocked` | What can start now / what waits on what |
+| `show ID` | Details, dependencies and notes |
+| `list [STATE or GROUP]` | Tasks by group, optionally filtered |
+| `start ID [-m NOTE]` | To do to doing; proposals under YOLO too |
+| `finish ID -m SUMMARY` | Doing to review, or to done for tasks a YOLO task depends on; the summary is required and kept as a note |
+| `pause ID [-m NOTE]` | Doing back to to do |
+| `note ID TEXT` | Append a note; descriptions stay as the human wrote them |
+| `propose GROUP TITLE [DESC] [--deps ID ...]` | Propose a task |
+| `add-group NAME [--prefix XX]` | Create a group |
+| `batch` | Propose many groups and tasks from JSON on stdin |
+| `depend ID ON [ON ...]` | Add dependencies |
+| `edit ID [--title T] [--group G] [--desc D]` | Revise a proposal that is not approved yet |
+| `withdraw ID [ID ...]` | Delete proposals that are not approved yet |
+| `undepend ID ON [ON ...]` | Remove dependencies from a proposal |
+| `check` | Validate the board; exit code 1 on errors |
+| `serve [--port N] [--host H]` | Open the board in the browser; in a project without a board, offer to create one first |
+| `init [DIR]` | Set up Kanvas in a project, or refresh the agents' copy after an update |
+| `import FILE.canvas` | Migrate a Kanvas 0.x Obsidian board |
+| `export [FILE.html]` | Write a read-only snapshot |
+
+`init` creates `kanvas.json` and installs the agent skill in `.agents/skills/kanvas/` (a copy of `kanvas.py`, `kanvas.html` and `SKILL.md`), and a copy of `SKILL.md` in `.claude/skills/` for Claude Code, which reads skills only from there. Codex, Cursor, Gemini CLI, OpenCode and GitHub Copilot read `.agents/skills/`. When the project has no `AGENTS.md`, it creates one that points agents to the skill. Run without a folder, it picks the folder that already holds a board (the current folder or one above it), else the top folder of the git repository, else the current folder; `kanvas init .` keeps the current folder, for one board per subproject. Apart from the skill files it installs, it never modifies an existing file.
+
+In a project without a board, `serve` asks whether to create one, then opens it. Without a person at the terminal, it fails with a message naming `kanvas init`.
+
+Text arguments also accept `--stdin` and `--file PATH`, read as UTF-8 on every platform, which is the reliable way to pass multi-line or non-ASCII text from any shell. Notes are signed with `--as NAME` or the `KANVAS_AGENT` environment variable. The CLI finds `kanvas.json` in the current directory or any parent; `--board PATH` or `KANVAS_BOARD` point elsewhere.
+
+Writes take a short lock and replace the file atomically, so several agents and the browser can work at the same time without losing changes.
+
+## File format
+
+```json
+{
+  "kanvas": 1,
+  "title": "Weather dashboard",
+  "groups": [
+    {
+      "id": "BE",
+      "name": "Backend"
+    }
+  ],
+  "tasks": [
+    {
+      "id": "BE-02",
+      "title": "Fetch and cache forecasts",
+      "state": "review",
+      "group": "BE",
+      "deps": ["BE-01"],
+      "desc": "`GET /forecast` proxies Open-Meteo.",
+      "notes": [
+        {
+          "at": "2026-10-19T11:05:00Z",
+          "by": "claude",
+          "text": "Done: responses cached for 10 minutes; 23 tests pass."
+        }
+      ]
+    }
+  ]
+}
+```
+
+States are `proposed`, `todo`, `doing`, `review` and `done`; blocked is computed. `"yolo": true` on a task puts it and everything it depends on under YOLO. A note edited in the browser gets an `"edited"` time next to its original `"at"`. The CLI and the browser write the same canonical formatting, so diffs show only real changes. Unknown fields are preserved. See [`examples/sample.json`](examples/sample.json) for a complete board.
+
+## Migrating from Kanvas 0.x (Obsidian)
+
+```bash
+kanvas init
+kanvas import Project.canvas
+```
+
+Card colors become states, groups come from the canvas groups, arrows become dependencies, and existing task IDs are kept. The `.canvas` file is left untouched. Once you are happy with the result, delete `Project.canvas`, `canvas-tool.py`, `RULES.md`, the Kanvas instructions in `CLAUDE.md` / `AGENTS.md`, and the `.obsidian/plugins/canvas-watcher` plugin.
+
+## Development
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+The suite is standard library only; one test also runs the browser's serializer under Node.js when it is installed, to check that both sides write identical files. Contributor notes are in [AGENTS.md](AGENTS.md).
 
 ## License
 
