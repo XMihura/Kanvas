@@ -198,8 +198,14 @@ svg#edges { position: absolute; left: 0; top: 0; overflow: visible; pointer-even
 @keyframes spin { to { --spin: 1turn; } }
 .card.sel, .kcard.sel { box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--c), var(--shadow-lg); }
 .card:focus-visible, .kcard:focus-visible { outline: 2px solid var(--accent); outline-offset: 6px; }
-.live { width: 7px; height: 7px; border-radius: 50%; background: var(--doing); flex: none; animation: live 1.6s ease-out infinite; }
-@keyframes live { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--doing) 60%, transparent); } 70%, 100% { box-shadow: 0 0 0 6px transparent; } }
+/* An agent at work: eight rays that fade in turn, and a light sweeping over its name, after the Thinking Loader of affectUI (MIT, github.com/flohoeller/affectui).
+   --phase keeps both in step with the clock, so a card drawn again carries on where the last one was. */
+.working { width: 13px; height: 13px; flex: none; overflow: visible; color: var(--doing); }
+.working line { stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; opacity: .2; animation: ray .8s linear infinite; animation-delay: calc(var(--phase, 0s) + var(--i) * .1s); }
+@keyframes ray { from { opacity: 1; } to { opacity: .2; } }
+.shine { position: relative; }
+.shine::after { content: attr(data-text); content: attr(data-text) / ""; position: absolute; inset: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: transparent; background: linear-gradient(90deg, transparent 38%, var(--text) 50%, transparent 62%) 100% 0 / 300% 100% no-repeat; -webkit-background-clip: text; background-clip: text; animation: sweep 1.8s linear infinite; animation-delay: var(--phase, 0s); pointer-events: none; }
+@keyframes sweep { to { background-position: 0% 0; } }
 .agent { width: 15px; height: 15px; border-radius: 4px; display: inline-flex; align-items: center; justify-content: center; font-size: 9.5px; font-weight: 750; color: #fff; background: var(--a); text-transform: uppercase; flex: none; }
 .card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .head-end { display: inline-flex; align-items: center; gap: 5px; min-width: 0; }
@@ -221,10 +227,15 @@ button.yolo-go, button.yolo-go:hover { border: 0; color: var(--yolo-ink); font-w
 .card-foot > span { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .card-foot .icon svg { width: 12px; height: 12px; }
 .card-foot .grow { flex: 1; min-width: 0; display: block; }
-/* The live dot's ring reaches 6px past the dot, so only the text clips. */
 .card-foot .who { display: flex; align-items: center; gap: 5px; overflow: visible; }
 .card-foot .who > .t { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.card-foot .live { margin-right: 1px; }
+/* A new note rolls the agent's line: the old one rises and blurs away, the new one comes up from below. */
+.card-foot .who > .t.roll { position: relative; display: block; }
+.card-foot .t.roll > span { display: block; overflow: hidden; text-overflow: ellipsis; }
+.card-foot .t.roll > .was { position: absolute; inset: 0; animation: roll-out .32s cubic-bezier(.22, 1, .36, 1) both; }
+.card-foot .t.roll > .was + .now-t { animation: roll-in .46s cubic-bezier(.22, 1, .36, 1) both; }
+@keyframes roll-in { from { opacity: 0; transform: translateY(70%); filter: blur(3px); } }
+@keyframes roll-out { to { opacity: 0; transform: translateY(-70%); filter: blur(3px); } }
 .card-foot .q { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--text); }
 .handle { position: absolute; right: -8px; top: 50%; width: 16px; height: 16px; margin-top: -8px; border-radius: 50%; background: var(--surface); border: 2px solid var(--c); opacity: 0; cursor: crosshair; transition: opacity .15s, scale .15s; }
 .handle.in { right: auto; left: -8px; }
@@ -292,6 +303,35 @@ button.yolo-go, button.yolo-go:hover { border: 0; color: var(--yolo-ink); font-w
 .icon.gtag, .ctx-menu :is(button, a.item) .icon.gtag { color: var(--g, var(--faint)); }
 .gtag svg { width: 13px; height: 13px; fill: color-mix(in srgb, var(--g, var(--faint)) 28%, transparent); }
 
+/* Agents panel: who works on what, on the right */
+#agents-panel { width: 300px; flex: none; border-left: 1px solid var(--border); background: var(--surface); overflow-y: auto; z-index: 4; }
+#agents-panel:focus { outline: none; }
+.ag-head { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; gap: 8px; padding: 9px 10px 9px 14px; background: var(--surface); border-bottom: 1px solid var(--border); }
+.ag-head .section-head { flex: 1; }
+.ag-head small { font-weight: 500; text-transform: none; letter-spacing: 0; color: var(--faint); }
+.ag-list { display: flex; flex-direction: column; padding: 6px; }
+.ag { display: flex; flex-direction: column; gap: 2px; padding: 8px; }
+.ag + .ag { border-top: 1px solid var(--border); }
+.ag-who { display: flex; align-items: center; gap: 7px; min-width: 0; font-weight: 650; }
+.ag-who .agent { width: 18px; height: 18px; font-size: 10.5px; }
+.ag-who .name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ag-state { margin-left: auto; display: inline-flex; align-items: center; gap: 5px; flex: none; font-size: 11.5px; font-weight: 500; color: var(--faint); }
+.ag.s-doing .ag-state { color: var(--doing); }
+.ag.s-ask .ag-state { color: var(--accent); }
+.ag-state .icon svg { width: 13px; height: 13px; }
+button.ag-task { width: 100%; display: flex; flex-direction: column; align-items: stretch; gap: 1px; margin-top: 4px; padding: 5px 8px; border: 0; border-radius: 6px; background: transparent; text-align: left; white-space: normal; }
+button.ag-task:hover { background: var(--surface-2); }
+button.ag-task:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent); outline-offset: -2px; }
+.ag-task .ag-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.ag-task .cid { margin-right: 5px; }
+.ag-task .ag-sub { overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; font-size: 12px; line-height: 1.35; color: var(--muted); overflow-wrap: anywhere; }
+.ag-task.ask .ag-sub { padding-left: 7px; border-left: 2px solid var(--accent); }
+.ag-task .ag-meta { font-size: 11.5px; color: var(--faint); }
+.ag-empty { padding: 14px 16px; color: var(--muted); font-size: 12.5px; line-height: 1.45; }
+#agents { height: 30px; gap: 4px; padding: 0 7px; color: var(--muted); }
+#agents[aria-pressed="true"] { color: var(--text); background: var(--surface-2); border-color: var(--border-strong); }
+#agents b { font-size: 11.5px; font-weight: 650; color: var(--doing); font-variant-numeric: tabular-nums; }
+
 /* Detail panel */
 #panel { width: 430px; flex: none; border-right: 1px solid var(--border); background: var(--surface); overflow-y: auto; z-index: 4; }
 #panel:focus { outline: none; }
@@ -320,7 +360,7 @@ button.yolo-go, button.yolo-go:hover { border: 0; color: var(--yolo-ink); font-w
 .now.s-proposed { border-style: dashed; }
 .now-head { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px; min-height: 20px; font-size: 13.5px; font-weight: 650; }
 .now-head > .icon { color: var(--c); }
-.now-head > .live { margin: 0 4px; }
+.now-head > .working { margin: 0 2px; }
 .now-who { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 400; color: var(--muted); white-space: nowrap; }
 .now-body { color: var(--text); }
 .now-body p { color: var(--muted); }
@@ -542,6 +582,23 @@ dialog.dlg[open]:has(> form > .help) { display: flex; flex-direction: column; }
 .ib-sub .agent { width: 13px; height: 13px; font-size: 8.5px; }
 .ib-q { overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; padding-left: 7px; border-left: 2px solid var(--accent); font-size: 12.5px; line-height: 1.35; color: var(--muted); }
 .inbox-body .cid { margin-right: 2px; }
+/* Work to review on this board is answered right here, after the Decision Inbox of affectUI (MIT, github.com/flohoeller/affectui):
+   the row confirms the answer for a moment, then folds away. */
+.ib-head.waiting { color: var(--accent); }
+.ib-head.clear { color: var(--done); }
+.ib-fold { display: grid; grid-template-rows: 1fr; transition: grid-template-rows .46s cubic-bezier(.22, 1, .36, 1), opacity .3s; }
+.ib-fold.gone { grid-template-rows: 0fr; opacity: 0; }
+.ib-fold > .ib-decide { min-height: 0; overflow: hidden; }
+.ctx-menu .ib-decide > .ib-open { align-items: flex-start; white-space: normal; }
+.ib-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-height: 28px; padding: 0 9px 8px; }
+.ctx-menu .ib-actions button { width: auto; padding: 3px 10px; border: 1px solid var(--border); background: var(--surface); font-size: 12.5px; }
+.ctx-menu .ib-actions button:hover { border-color: var(--border-strong); background: var(--surface-2); }
+.ctx-menu .ib-actions button.primary { border-color: var(--accent); background: var(--accent); color: var(--accent-text); }
+.ctx-menu .ib-actions button.primary .icon { color: inherit; }
+.ctx-menu .ib-actions button.primary:hover { filter: brightness(1.07); }
+.ib-actions .icon svg { width: 13px; height: 13px; }
+.ib-done { display: inline-flex; align-items: center; gap: 5px; font-size: 12.5px; font-weight: 600; color: var(--done); animation: ib-in .36s cubic-bezier(.22, 1, .36, 1); }
+@keyframes ib-in { from { opacity: 0; transform: translateY(3px); } }
 #welcome { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: var(--bg); z-index: 20; padding: 20px; }
 #welcome.drag { background: color-mix(in srgb, var(--accent) 8%, var(--bg)); }
 .welcome-card { max-width: 480px; width: 100%; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 30px; box-shadow: var(--shadow-lg); display: flex; flex-direction: column; gap: 14px; }
@@ -560,18 +617,22 @@ dialog.dlg[open]:has(> form > .help) { display: flex; flex-direction: column; }
 .welcome-card .row { display: flex; gap: 8px; flex-wrap: wrap; }
 
 @media (prefers-reduced-motion: reduce) {
-  .yolo-tag, .yolo-chip, .edge.live, .live, :is(.card, .kcard)::before, :is(.card, .kcard)::after { animation: none !important; }
+  .yolo-tag, .yolo-chip, .edge.live, .working line, .shine::after, :is(.card, .kcard)::before, :is(.card, .kcard)::after { animation: none !important; }
   :is(.card, .kcard).s-doing::before { content: none; }
   :is(.card, .kcard).s-doing:not(.asking) { border-color: var(--c); }
-  #world.animate, .progress span { transition: none; }
+  #world.animate, .progress span, .ib-fold { transition: none; }
   .handle { transition: opacity .15s; }
-  .live { box-shadow: 0 0 0 3px color-mix(in srgb, var(--doing) 25%, transparent); }
+  .working line { opacity: .6; }
+  .shine::after, .card-foot .t.roll > .was { display: none; }
   .card.zap { animation-delay: 0s !important; }
   /* The same names keep animationend, which clears the cards' classes: a changed card gets a ring that fades in place, and nothing grows or slides in. */
   @keyframes flash { 0%, 50% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--c) 70%, transparent), var(--shadow); } }
   @keyframes zap { 0%, 50% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--y2) 90%, transparent), var(--shadow); } }
   @keyframes enter { }
   @keyframes tip-in { }
+  @keyframes roll-in { }
+  @keyframes roll-out { }
+  @keyframes ib-in { }
 }
 @media (max-width: 1820px) {
   .meter .progress { display: none; }
@@ -620,7 +681,7 @@ dialog.dlg[open]:has(> form > .help) { display: flex; flex-direction: column; }
   .brand { order: 1; flex: 1 1 0; min-width: 0; }
   .board-title { max-width: 100%; }
   .seg { order: 2; }
-  #display, #inbox { order: 3; }
+  #display, #inbox, #agents { order: 3; }
   #new-task { order: 4; }
   header.top > .spacer { order: 5; flex: 0 0 100%; height: 6px; }
   #chips { order: 6; flex: 0 1 auto; min-width: 0; overflow-x: auto; scrollbar-width: none; }
@@ -636,15 +697,16 @@ dialog.dlg[open]:has(> form > .help) { display: flex; flex-direction: column; }
 }
 @media (max-width: 900px) {
   #panel { position: absolute; inset: 0 auto 0 0; width: min(430px, 100%); box-shadow: var(--shadow-lg); }
+  #agents-panel { position: absolute; inset: 0 0 0 auto; width: min(320px, 100%); box-shadow: var(--shadow-lg); }
 }
 
 /* Touch: fingers need targets of 40px, and Safari zooms into text fields under 16px. */
 @media (max-width: 640px), (pointer: coarse) {
   input, select, textarea, .title-input, .note-edit textarea, .dlg .field :is(input, select, textarea), .dlg .pick-box input { font-size: 16px; }
-  header.top :is(button, .search input), header.top > .tools > button, header.top > #help, #group-filter, #hide-done, #inbox, .board-title, .title-input { height: 40px; }
+  header.top :is(button, .search input), header.top > .tools > button, header.top > #help, #group-filter, #hide-done, #inbox, #agents, .board-title, .title-input { height: 40px; }
   .search kbd { display: none; }
   .search input { padding-right: 8px; }
-  header.top .icon-btn, #hide-done, #inbox, #new-task, #display { min-width: 40px; justify-content: center; }
+  header.top .icon-btn, #hide-done, #inbox, #agents, #new-task, #display { min-width: 40px; justify-content: center; }
   header.top .track { padding: 0; }
   header.top .track > button { height: 40px; min-width: 40px; justify-content: center; }
   :is(.p-head, .now-actions, .now-yolo, .now-hint, .row-end, .section-head, .dlg-actions, .col-head, .pick-bar, .multi-bar, .welcome-card, .banner, .group-row, .group-new) button, button.add-line, .dlg button.pick-graph, .dlg .field :is(input, select) { min-height: 40px; }
@@ -701,7 +763,7 @@ dialog.dlg[open]:has(> form > .help) { display: flex; flex-direction: column; }
   #filter { display: inline-flex; order: 2; }
   #yolo-chip { order: 2; }
   #undo, #redo { order: 4; }
-  #inbox { padding: 0 4px; gap: 2px; }
+  #inbox, #agents { padding: 0 4px; gap: 2px; }
   .d-label kbd { display: none; }
 
   #panel { position: fixed; inset: 0; width: auto; z-index: 15; border: 0; box-shadow: none; }
@@ -771,6 +833,7 @@ dialog.dlg[open]:has(> form > .help) { display: flex; flex-direction: column; }
     </div>
     <button id="display" data-icon="sliders" data-tip="Direction, card order, finished tasks and theme" aria-haspopup="dialog" aria-expanded="false" aria-label="Display options"><span class="lbl">Display</span></button>
     <button id="inbox" aria-haspopup="dialog" aria-expanded="false" hidden></button>
+    <button id="agents" aria-pressed="false" aria-controls="agents-panel"></button>
   </div>
   <div class="tools edit-only">
     <button id="undo" class="ghost icon-btn" data-icon="undo" data-tip="Nothing to undo" data-key="Ctrl+Z" aria-label="Undo" disabled></button>
@@ -815,6 +878,7 @@ dialog.dlg[open]:has(> form > .help) { display: flex; flex-direction: column; }
     <div class="empty" id="graph-empty" hidden></div>
   </section>
   <section class="view" id="board-view" hidden><nav id="col-tabs" class="track" aria-label="Columns"></nav><div id="kanban"></div></section>
+  <aside id="agents-panel" hidden aria-label="Agents" tabindex="-1"></aside>
 </main>
 <div id="welcome" hidden></div>
 <div id="toasts" aria-live="polite"></div>
@@ -888,6 +952,7 @@ const ICONS = {
   unlink: '<path d="M9 17H7A5 5 0 0 1 7 7h2M15 7h2a5 5 0 0 1 1.5 9.8M8 12h3M3 3l18 18"/>',
   spark: '<path d="M12 3v4M12 17v4M3 12h4M17 12h4M6 6l2.5 2.5M15.5 15.5 18 18M6 18l2.5-2.5M15.5 8.5 18 6"/>',
   zap: '<path d="M13 2 4 14h7l-1 8 9-12h-7z"/>',
+  users: '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M16 4.6a3.5 3.5 0 0 1 0 6.8M21.5 20a6.5 6.5 0 0 0-3.8-5.9"/>',
   bell: '<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/>',
   tag: '<path d="M12.6 2.6A2 2 0 0 0 11.2 2H4a2 2 0 0 0-2 2v7.2a2 2 0 0 0 .6 1.4l8.7 8.7a2.4 2.4 0 0 0 3.4 0l6.6-6.6a2.4 2.4 0 0 0 0-3.4z"/><circle cx="7.5" cy="7.5" r="1.5" fill="currentColor" stroke="none"/>',
   chevron: '<path d="m7 10 5 5 5-5"/>',
@@ -2687,6 +2752,17 @@ let lastLayout = null;
 // For tuning the layout from the browser console.
 window.kanvasLayoutStats = () => lastLayout && layoutMetrics(lastLayout);
 
+// The spinner of a task under way, in step with every other one on the page.
+function working() {
+  const span = document.createElement("span");
+  span.innerHTML = `<svg class="working" viewBox="0 0 16 16" aria-hidden="true" style="--phase:${-(performance.now() % 800) - 800}ms">${
+    Array.from({ length: 8 }, (_, i) => `<line x1="8" y1="1.75" x2="8" y2="4.75" transform="rotate(${i * 45} 8 8)" style="--i:${i}"/>`).join("")}</svg>`;
+  return span.firstChild;
+}
+
+// The line each doing card last showed, by task, so a new note can roll the old line away.
+const footSeen = new Map();
+
 const agentMark = (by) => h("span", { class: "agent", style: `--a:${by === "human" ? "#64748b" : colorFor(by)}` }, by.slice(0, 1));
 
 // What a screen reader says for a card: its ID and title, its state, and the agent or the tasks its foot names.
@@ -2697,7 +2773,8 @@ function cardLabel(t, vs, waits) {
 }
 
 function cardFoot(t) {
-  const vs = vstate(t), notes = t.notes.length, last = t.notes[notes - 1], q = openQuestion(t);
+  const vs = vstate(t), notes = t.notes.length, last = t.notes[notes - 1], q = openQuestion(t), k = key(t.id), seen = footSeen.get(k);
+  footSeen.delete(k);
   let left = null;
   if (q) {
     const by = q.by || "?", text = questionText(q);
@@ -2707,7 +2784,14 @@ function cardFoot(t) {
     left = h("span", { class: "grow", title: `Waiting on ${waits.join(", ")}` }, icon("lock"), ` ${waits[0]}${waits.length > 1 ? ` +${waits.length - 1}` : ""}`);
   } else if (last && (vs === "doing" || vs === "review")) {
     const by = last.by || "?";
-    left = h("span", { class: "grow who", title: last.text }, vs === "doing" ? h("i", { class: "live" }) : null, agentMark(by), h("span", { class: "t" }, `${by} · ${ago(last.at)}`));
+    const text = `${by} · ${ago(last.at)}`;
+    if (vs !== "doing") left = h("span", { class: "grow who", title: last.text }, agentMark(by), h("span", { class: "t" }, text));
+    else {
+      footSeen.set(k, { notes, text });
+      const was = seen && seen.notes !== notes ? seen.text : null;
+      const line = h("span", { class: "now-t shine", "data-text": text, style: `--phase:${-(performance.now() % 1800)}ms` }, text);
+      left = h("span", { class: "grow who", title: last.text }, working(), agentMark(by), h("span", { class: "t roll" }, was ? h("span", { class: "was", "aria-hidden": "true" }, was) : null, line));
+    }
   } else if (vs === "proposed" && t.by) {
     left = h("span", { class: "grow who", title: `Proposed by ${t.by}` }, agentMark(t.by), h("span", { class: "t" }, t.at ? `${t.by} · ${ago(t.at)}` : t.by));
   } else if (t.deps.length) {
@@ -3943,7 +4027,7 @@ function nowCard(t, vs, ro, note) {
     proposed: [icon("spark"), "Proposed", h("p", {}, "Approve it to make it available for work, ask for changes, or reject it.")],
     blocked: [icon("lock"), "Blocked", h("p", {}, "Starts when ", list(waits), waits.length > 1 ? " are done." : " is done.")],
     todo: [icon("play"), "Ready to start", ro ? null : h("p", {}, "Start it yourself, or tell an agent ", h("button", { class: "say", title: "Copy", onclick: () => copy(`work on ${t.id}`) }, `work on ${t.id}`, icon("copy")))],
-    doing: [h("i", { class: "live" }), "In progress", null],
+    doing: [working(), "In progress", null],
     review: [icon("check"), "Ready for your review", null],
     done: [icon("check"), "Done", null],
   }[vs];
@@ -4727,6 +4811,7 @@ function renderInboxButton() {
     reviews ? `${reviews} task${reviews === 1 ? "" : "s"} to review` : null).join(", ") || "Nothing waits for you";
   btn.setAttribute("aria-label", `Inbox: ${btn.dataset.tip}`);
   if (inboxBody?.isConnected) fillInbox(inboxBody);
+  renderAgents();
 }
 
 let inboxBody = null;
@@ -4736,29 +4821,130 @@ function inboxMenu() {
   return [{ node: inboxBody }];
 }
 
-// Rebuilt only when the list changes, so a row keeps keyboard focus while other boards are polled.
+// Rebuilt only when the list changes, so a row keeps keyboard focus while other boards are polled. A row just
+// answered holds the list still until it has folded away.
 function fillInbox(node) {
+  if (node.dataset.hold) return;
   const go = (name, id) => () => { closeMenu(); goTask(name, id); };
-  const boards = inboxBoards(), several = boards.length > 1;
+  const boards = inboxBoards(), several = boards.length > 1, ro = !!store?.readOnly;
   const sections = boards.map((b) => ({ b, items: waitingIn(b.board) })).filter((s) => s.items.length);
-  const sig = JSON.stringify(sections.map((s) => [s.b.name, s.items.map(({ t, state }) => [t.id, t.title, t.notes.length, state])]));
+  const sig = JSON.stringify([ro, sections.map((s) => [s.b.name, s.items.map(({ t, state }) => [t.id, t.title, t.notes.length, state])])]);
   if (node.dataset.sig === sig) return;
   node.dataset.sig = sig;
-  const row = (b, { t, state }) => {
+  const main = (t, state) => {
     const last = t.notes[t.notes.length - 1], by = String((last && last.by) || "?");
-    return h("button", { type: "button", class: "ib-row", onclick: go(b.name, t.id) },
-      h("span", { class: `badge s-${state}` }, LABEL[state]),
+    return [h("span", { class: `badge s-${state}` }, LABEL[state]),
       h("span", { class: "ib-main" }, h("span", { class: "ib-title" }, h("span", { class: "cid" }, t.id), " ", t.title),
         state === "ask" ? h("span", { class: "ib-q" }, questionText(last)) : null,
-        last ? h("span", { class: "ib-sub" }, agentMark(by), state === "ask" ? `${by} · ${ago(last.at)} · reply in its chat` : `${by} · ${ago(last.at)}`) : null));
+        last ? h("span", { class: "ib-sub" }, agentMark(by), state === "ask" ? `${by} · ${ago(last.at)} · reply in its chat` : `${by} · ${ago(last.at)}`) : null)];
   };
-  const asks = sections.some((s) => s.items.some((x) => x.state === "ask"));
+  // Marking done shows "Marked done" for a moment, then the row folds away and the list catches up with the board.
+  const markDone = (t, fold, actions) => async () => {
+    node.dataset.hold = "1";
+    if (menuEl) menuEl.focus({ preventScroll: true });
+    actions.replaceChildren(h("span", { class: "ib-done", role: "status" }, icon("check"), "Marked done"));
+    const head = node.querySelector(".ib-head"), left = n - 1;
+    head.className = `ib-head ${left ? "waiting" : "clear"}`;
+    head.textContent = left ? `${left} waiting for you` : "All caught up";
+    const settle = () => { delete node.dataset.hold; node.dataset.sig = ""; fillInbox(node); };
+    if (!(await review(t, "done"))) return settle();
+    setTimeout(() => {
+      fold.classList.add("gone");
+      const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
+      if (reduce) return settle();
+      fold.addEventListener("transitionend", (e) => { if (e.propertyName === "grid-template-rows") settle(); });
+      setTimeout(() => { if (node.dataset.hold) settle(); }, 700);
+    }, 1100);
+  };
+  const row = (b, { t, state }) => {
+    if (!b.here || ro || state !== "review") return h("button", { type: "button", class: "ib-row", onclick: go(b.name, t.id) }, main(t, state));
+    const actions = h("div", { class: "ib-actions" });
+    const fold = h("div", { class: "ib-fold" }, h("div", { class: "ib-decide" }, h("button", { type: "button", class: "ib-open", onclick: go(b.name, t.id) }, main(t, state)), actions));
+    actions.append(
+      h("button", { type: "button", class: "primary", onclick: markDone(t, fold, actions) }, icon("check"), "Mark done"),
+      h("button", { type: "button", onclick: () => { closeMenu(); sendBack(t); } }, icon("back"), "Send back…"));
+    return fold;
+  };
+  const n = sections.reduce((sum, s) => sum + s.items.length, 0);
   node.replaceChildren(...compact(
-    h("div", { class: "ib-head" }, asks ? "Waiting for you" : "To review"),
+    h("div", { class: `ib-head ${n ? "waiting" : "clear"}`, "aria-live": "polite" }, n ? `${n} waiting for you` : "All caught up"),
     sections.length ? sections.map((s) => [several ? h("div", { class: "ib-board" }, s.b.title, s.b.here ? h("small", {}, "this board") : null) : null, s.items.map((x) => row(s.b, x))])
       : h("div", { class: "ib-empty" }, "Nothing waits for you. Questions from agents and finished work from every open board show here."),
   ));
 }
+
+// Agents ----------------------------------------------------------------------
+
+// Every agent that left a note or a proposal on the open boards, from what the boards already hold: waiting for a
+// reply in its chat, working on tasks in progress, or idle since its last word. Waiting first, then working, then idle.
+const AGENT_RANK = { ask: 0, doing: 1, idle: 2 };
+function agentsIn(boards) {
+  const all = new Map(), time = (at) => Date.parse(at) || 0;
+  const of = (by) => { if (!all.has(by)) all.set(by, { by, asks: [], doing: [], last: null }); return all.get(by); };
+  const heard = (by, b, t, at) => {
+    if (!by || by === "human") return;
+    const a = of(by);
+    if (!a.last || time(at) > time(a.last.at)) a.last = { b, t, at };
+  };
+  for (const b of boards) {
+    for (const t of b.board.tasks) {
+      for (const n of t.notes) heard(n.by, b, t, n.at);
+      if (t.at) heard(t.by, b, t, t.at);
+      const last = t.notes[t.notes.length - 1], q = openQuestion(t);
+      if (q && q.by && q.by !== "human") of(q.by).asks.push({ b, t, note: q });
+      else if (t.state === "doing" && last && last.by && last.by !== "human") of(last.by).doing.push({ b, t, note: last });
+    }
+  }
+  return [...all.values()].map((a) => ({ ...a, state: a.asks.length ? "ask" : a.doing.length ? "doing" : "idle" }))
+    .sort((x, y) => AGENT_RANK[x.state] - AGENT_RANK[y.state] || time(y.last?.at) - time(x.last?.at));
+}
+
+const firstLine = (text) => String(text || "").trim().split("\n")[0];
+
+function toggleAgents() {
+  prefs.agentsPanel = !prefs.agentsPanel;
+  savePrefs();
+  renderAgents();
+  if (prefs.agentsPanel) $("#agents-panel").focus({ preventScroll: true });
+  else $("#agents").focus({ preventScroll: true });
+}
+
+// Rebuilt only when what it shows changes, so focus and scrolling stay put while the boards are polled.
+function renderAgents() {
+  const btn = $("#agents"), panel = $("#agents-panel");
+  if (!btn || !board) return;
+  const boards = inboxBoards(), several = boards.length > 1, agents = agentsIn(boards), open = !!prefs.agentsPanel;
+  const busy = agents.filter((a) => a.state === "doing").length, asking = agents.filter((a) => a.state === "ask").length;
+  btn.replaceChildren(...compact(icon("users"), busy ? h("b", {}, busy) : null));
+  btn.setAttribute("aria-pressed", String(open));
+  btn.dataset.tip = compact(busy ? `${busy} agent${busy === 1 ? "" : "s"} working` : null, asking ? `${asking} waiting for you` : null).join(", ") || "Agents";
+  btn.setAttribute("aria-label", `Agents panel: ${btn.dataset.tip}`);
+  panel.hidden = !open;
+  if (!open) return;
+  const sig = JSON.stringify([several, agents.map((a) => [a.by, a.state, a.last && [a.last.b.name, a.last.t.id, a.last.t.title, ago(a.last.at)],
+    [...a.asks, ...a.doing].map(({ b, t, note }) => [b.name, t.id, t.title, note.text, ago(note.at)])])]);
+  if (panel.dataset.sig === sig) return;
+  panel.dataset.sig = sig;
+  const where = (b) => (b.here ? "" : ` · ${b.title}`);
+  const task = (b, t, kind, note, at) => h("button", { type: "button", class: `ag-task ${kind}`, title: note ? note.text : t.title, onclick: () => goTask(b.name, t.id) },
+    h("span", { class: "ag-title" }, h("span", { class: "cid" }, t.id), t.title),
+    note ? h("span", { class: "ag-sub" }, firstLine(kind === "ask" ? questionText(note) : note.text)) : null,
+    h("span", { class: "ag-meta" }, `${kind === "idle" ? "Last seen " : ""}${ago(at)}${where(b)}`));
+  const rows = agents.map((a) => h("div", { class: `ag s-${a.state}` },
+    h("div", { class: "ag-who" }, agentMark(a.by), h("span", { class: "name" }, a.by),
+      h("span", { class: "ag-state" }, a.state === "ask" ? [icon("ask"), "Waiting for you"] : a.state === "doing" ? [working(), "Working"] : "Idle")),
+    a.asks.map((x) => task(x.b, x.t, "ask", x.note, x.note.at)),
+    a.doing.map((x) => task(x.b, x.t, "doing", x.note, x.note.at)),
+    a.state === "idle" ? task(a.last.b, a.last.t, "idle", null, a.last.at) : null));
+  panel.replaceChildren(
+    h("div", { class: "ag-head" },
+      h("span", { class: "section-head" }, "Agents", agents.length ? h("small", {}, compact(asking ? `${asking} waiting` : null, `${busy} working`, `${agents.length - busy - asking} idle`).join(" · ")) : null),
+      h("button", { type: "button", class: "ghost icon-btn", title: "Close", "aria-label": "Close the agents panel", onclick: toggleAgents }, icon("x"))),
+    agents.length ? h("div", { class: "ag-list" }, rows)
+      : h("div", { class: "ag-empty" }, `No agent has worked on ${several ? "the open boards" : "this board"} yet. Agents show up here once they propose a task or leave a note.`));
+}
+// "3m ago" moves on by itself.
+setInterval(() => { if (prefs.agentsPanel && document.visibilityState === "visible") renderAgents(); }, 30000);
 
 async function switchBoard(step) {
   await refreshBoards();
@@ -5322,6 +5508,7 @@ function setupChrome() {
   }
   $("#display").onclick = (e) => dropdown(e.currentTarget, displayMenu(), { alignRight: true, cls: "dpop", role: "dialog", label: "Display options" });
   $("#hide-done").onclick = toggleDone;
+  $("#agents").onclick = toggleAgents;
   $("#inbox").onclick = (e) => dropdown(e.currentTarget, inboxMenu(), { alignRight: true, cls: "inbox-pop", role: "dialog", label: "Inbox" });
   $("#group-filter").onclick = (e) => dropdown(e.currentTarget, groupFilterMenu(), { role: "dialog", label: "Filter by group" });
   $("#filter").onclick = (e) => dropdown(e.currentTarget, filterMenu(), { role: "dialog", label: "Filters" });

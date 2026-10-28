@@ -1,4 +1,10 @@
 # Changelog
+## Unreleased
+
+- Running tasks show their agent at work, after affectUI's Thinking Loader (MIT): a spinner of eight rays fading in turn replaces the pulsing dot on cards and in the task panel, a light sweeps over the agent's line, and a new note rolls the old line away
+- Review from the inbox, after affectUI's Decision Inbox (MIT): tasks to review on this board get Mark done and Send back… right in the bell's list; a row confirms, then folds away, the count drops at once, and Undo in the toast brings it back. The heading counts what waits for you, or says All caught up
+- An Agents panel on the right, opened with the people button by the bell, lists every agent on the open boards, from the notes and proposals they left: waiting for your reply with its question, working with its latest note, or idle since it was last seen. Click a task to open it, on another board too; the button counts the agents at work, and the panel stays open across visits
+
 ## v0.4.0 — 2026-10-27
 Kanvas runs without Obsidian. The board is a JSON file, agents use a new CLI, and you plan and review in an interactive HTML page.
 
