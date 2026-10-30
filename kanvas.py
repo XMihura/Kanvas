@@ -1530,7 +1530,24 @@ CANVAS_SKIP_IDS = {"legend", "canvas-errors", "canvas-warnings", "canvas-lint", 
 
 def import_canvas(canvas, title=""):
     """Convert an Obsidian Canvas board from Kanvas 0.x into a Kanvas board."""
-    nodes = canvas.get("nodes", [])
+    if not isinstance(canvas, dict):
+        raise KanvasError('expected a JSON object with "nodes" and "edges"')
+    nodes, edges = canvas.get("nodes", []), canvas.get("edges", [])
+    for key, value in (("nodes", nodes), ("edges", edges)):
+        if not isinstance(value, list) or not all(isinstance(x, dict) for x in value):
+            raise KanvasError(f'"{key}" must be a list of objects')
+    # Text and group nodes are read below; other nodes are skipped.
+    for n in nodes:
+        if n.get("type") not in ("text", "group"):
+            continue
+        if not isinstance(n.get("id"), str):
+            raise KanvasError('every text and group node needs a string "id"')
+        if not all(isinstance(n.get(k, 0), (int, float)) for k in ("x", "y", "width", "height")):
+            raise KanvasError(f'node {n["id"]}: "x", "y", "width" and "height" must be numbers')
+        if not isinstance(n.get("text") or "", str):
+            raise KanvasError(f'node {n["id"]}: "text" must be a string')
+    if not all(isinstance(e.get("fromNode"), str) and isinstance(e.get("toNode"), str) for e in edges):
+        raise KanvasError('every edge needs a string "fromNode" and "toNode"')
     group_nodes = [n for n in nodes if n.get("type") == "group"]
 
     def container(n):
@@ -1563,7 +1580,7 @@ def import_canvas(canvas, title=""):
             "state": CANVAS_STATES.get(str(n.get("color", "1")), "todo"),
             "deps": [],
         }
-    for e in canvas.get("edges", []):
+    for e in edges:
         src, dst = e.get("fromNode"), e.get("toNode")
         if src in items and dst in items and src != dst and src not in items[dst]["deps"]:
             items[dst]["deps"].append(src)
@@ -1621,7 +1638,10 @@ def cmd_import(args):
         raise KanvasError(f"Cannot read {args.canvas}: {e}")
     out = os.path.abspath(args.output or os.path.join(os.path.dirname(os.path.abspath(args.canvas)), BOARD_FILE))
     title = os.path.splitext(os.path.basename(args.canvas))[0]
-    board = import_canvas(canvas, title)
+    try:
+        board = import_canvas(canvas, title)
+    except KanvasError as e:
+        raise KanvasError(f"{args.canvas} is not an Obsidian canvas: {e}")
     if os.path.exists(out) and not args.force:
         existing = load_board(out)
         if existing["tasks"] or existing["groups"]:

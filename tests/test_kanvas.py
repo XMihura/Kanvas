@@ -2023,6 +2023,33 @@ class ImportExportTests(TempBoard):
         self.assertIn("--force", self.fails("import", "Project.canvas"))
         self.run_cli("import", "Project.canvas", "--force")
 
+    def test_import_refuses_a_malformed_canvas(self):
+        card = {"id": "a", "type": "text", "text": "## AB-1 x", "color": "1", "x": 10, "y": 10, "width": 10, "height": 10}
+        group = {"type": "group", "x": 0, "y": 0, "width": 100, "height": 100}
+        cases = [
+            ([], "JSON object"),
+            ({"nodes": {"a": card}}, '"nodes"'),
+            ({"nodes": [card], "edges": 5}, '"edges"'),
+            ({"nodes": [card, "b"]}, '"nodes"'),
+            ({"nodes": [{"type": "text", "text": "## AB-1 x", "color": "1"}]}, '"id"'),
+            ({"nodes": [card, group]}, '"id"'),
+            ({"nodes": [dict(card, x="10")]}, "numbers"),
+            ({"nodes": [card, dict(group, id="g", width=None)]}, "numbers"),
+            ({"nodes": [dict(card, text=["## AB-1 x"])]}, '"text"'),
+            ({"nodes": [card], "edges": [{"fromNode": ["a"], "toNode": "a"}]}, '"fromNode"'),
+        ]
+        before = self.raw()
+        for canvas, problem in cases:
+            with self.subTest(canvas=canvas):
+                with open(os.path.join(self.dir, "Bad.canvas"), "w", encoding="utf-8") as f:
+                    json.dump(canvas, f)
+                code, _, err = self.run_cli("import", "Bad.canvas", check=False)
+                self.assertEqual(code, 1, err)
+                self.assertIn("Error: Bad.canvas is not an Obsidian canvas: ", err)
+                self.assertIn(problem, err)
+                self.assertNotIn("Traceback", err)
+                self.assertEqual(self.raw(), before)
+
     def test_export_snapshot(self):
         board = self.board()
         board["tasks"].append(task("G-01", title="Café \ud83d", desc="</script><script>alert(1)</script>"))
