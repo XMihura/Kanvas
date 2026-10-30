@@ -195,7 +195,11 @@ class Page(DevTools):
 
 
 NOTE_BOX = "document.querySelector('#panel .note-form textarea')"
+DESC_BOX = "document.querySelector('#panel textarea[aria-label=\"Description\"]')"
+EDIT_DESC = ("[...document.querySelectorAll('#panel button')]"
+             ".find((b) => b.title.startsWith('Edit the description') || b.textContent.includes('Add a description')).click()")
 ADD_NOTE = "[...document.querySelectorAll('#panel .note-form button')].find((b) => b.textContent.includes('Add note')).click()"
+PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
 
 
 class BrowserSmokeTests(unittest.TestCase):
@@ -295,6 +299,18 @@ class BrowserSmokeTests(unittest.TestCase):
         self.page.send("Input.insertText", text=text)
         self.page.js(ADD_NOTE)
 
+    def paste_image(self, box):
+        """Pastes a 1×1 PNG named "login form.png" into the text field that the expression `box` finds."""
+        self.page.js(f"""(() => {{
+            const dt = new DataTransfer(), bytes = Uint8Array.from(atob('{PNG}'), (c) => c.charCodeAt(0));
+            dt.items.add(new File([bytes], 'login form.png', {{ type: 'image/png' }}));
+            {box}.dispatchEvent(new ClipboardEvent('paste', {{ clipboardData: dt, bubbles: true, cancelable: true }}));
+        }})()""")
+
+    def open_task(self, tid):
+        self.page.js(f"location.hash = {json.dumps(tid)}")
+        self.until(f"the panel of {tid}", f"document.querySelector('#panel .cid')?.textContent === {json.dumps(tid)}")
+
     def notes(self, tid):
         return [n["text"] for n in kanvas.find_task(kanvas.load_board(self.path), tid)["notes"]]
 
@@ -322,6 +338,72 @@ class BrowserSmokeTests(unittest.TestCase):
         self.until("the agent's note and start", "document.querySelector('#panel').innerText.includes('Agent note from the CLI')"
                                                  " && document.querySelector('[data-id=\"FE-04\"]').classList.contains('s-doing')",
                    timeout=5)
+        self.assertEqual(self.page.logged(), [])
+
+    def test_a_pasted_image_is_kept_next_to_the_board_and_shows_in_the_note(self):
+        self.load("#BE-03")
+        self.until("the panel of BE-03", "document.querySelector('#panel .cid')?.textContent === 'BE-03'")
+        self.page.js(f"{NOTE_BOX}.focus(); document.execCommand('insertText', false, 'Before:');")
+        self.paste_image(NOTE_BOX)
+        text = self.until("the image's Markdown in the note box",
+                          f"/^Before:\\n!\\[login form\\]\\(kanvas-files\\/[0-9a-f]{{16}}\\.png\\)$/.test({NOTE_BOX}.value) && {NOTE_BOX}.value")
+        ref = re.search(r"\((.*)\)", text).group(1)
+        self.assertTrue(os.path.isfile(os.path.join(self.dir, "demo", ref)))
+        self.page.js(ADD_NOTE)
+        self.wait_for("the note in kanvas.json", lambda: text in self.notes("BE-03"))
+        img = f"document.querySelector('#panel .md img[src=\"{ref}\"]')"
+        self.until("the image loaded in the panel", f"{img}?.complete && {img}.naturalWidth === 1")
+        self.page.js(f"{img}.click()")
+        self.until("the image at full size", "document.querySelector('dialog.lightbox[open] img')?.naturalWidth === 1")
+        self.page.js("document.querySelector('dialog.lightbox').click()")
+        self.until("the full-size image to close", "!document.querySelector('dialog.lightbox')")
+        self.assertEqual(self.page.logged(), [])
+
+    def test_an_image_that_finishes_uploading_after_another_task_opens_stays_with_its_task(self):
+        self.load("#BE-03")
+        self.open_task("BE-03")
+        # Uploads wait until the test lets them through.
+        held = []
+        self.page.on("Fetch.requestPaused", lambda p: held.append(p["requestId"]))
+        self.page.send("Fetch.enable", patterns=[{"urlPattern": "*/api/files"}])
+
+        def upload_held():
+            self.page.logged()  # takes in the events that arrived meanwhile
+            return held
+
+        def let_upload_through():
+            self.page.post("Fetch.continueRequest", requestId=held.pop())
+        toasts = "document.querySelector('#toasts').innerText"
+
+        # The note box: the image waits in the note draft of the task it was pasted in.
+        self.page.js(f"{NOTE_BOX}.focus(); document.execCommand('insertText', false, 'On BE-03:');")
+        self.paste_image(NOTE_BOX)
+        self.wait_for("the upload to start", upload_held)
+        self.open_task("BE-02")
+        self.page.js(f"{NOTE_BOX}.focus(); document.execCommand('insertText', false, 'On BE-02');")
+        let_upload_through()
+        went = "The image is in your note on BE-03"
+        self.until("the image to land", f"{toasts}.includes({json.dumps(went)}) || {NOTE_BOX}.value !== 'On BE-02'")
+        self.assertEqual(self.page.js(f"{NOTE_BOX}.value"), "On BE-02")
+        self.assertIn(went, self.page.js(toasts))
+        self.open_task("BE-03")
+        self.assertRegex(self.page.js(f"{NOTE_BOX}.value"), r"\AOn BE-03:\n!\[login form\]\(kanvas-files/[0-9a-f]{16}\.png\)\Z")
+
+        # The description editor keeps no draft once another task opens, so the image goes nowhere else.
+        self.page.js(EDIT_DESC)
+        self.until("the description editor of BE-03", f"!!{DESC_BOX}")
+        self.paste_image(DESC_BOX)
+        self.wait_for("the upload to start", upload_held)
+        self.open_task("BE-02")
+        self.page.js(EDIT_DESC)
+        self.until("the description editor of BE-02", f"!!{DESC_BOX}")
+        before = self.page.js(f"{DESC_BOX}.value")
+        let_upload_through()
+        closed = "The editor closed before the image was ready"
+        self.until("the image to land", f"{toasts}.includes({json.dumps(closed)}) || {DESC_BOX}.value !== {json.dumps(before)}")
+        self.assertEqual(self.page.js(f"{DESC_BOX}.value"), before)
+        self.assertIn(closed, self.page.js(toasts))
+        self.page.send("Fetch.disable")
         self.assertEqual(self.page.logged(), [])
 
     def test_a_failed_save_gives_the_typed_note_back(self):
