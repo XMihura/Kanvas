@@ -2119,6 +2119,31 @@ class ServerTests(TempBoard):
         self.assertEqual(self.request("GET", "/other/api/board")[0], 200)
         self.assertTrue(json.loads(self.request("GET", "/api/boards")[2])["manage"])
 
+    def test_closed_urls_cannot_read_or_write_another_project(self):
+        for replacement_title in ("Other", "Different JSON"):
+            with self.subTest(replacement_title=replacement_title):
+                folder = "identical" if replacement_title == "Other" else "different"
+                original = self.other_project(os.path.join(folder, "a", "project"))
+                replacement = self.other_project(os.path.join(folder, "b", "project"), title=replacement_title)
+                name = json.loads(self.open_board(original)[2])["name"]
+                api = f"/{name}/api/board"
+                _, headers, body = self.request("GET", api)
+                self.assertEqual(self.close_board(name)[0], 200)
+                replacement_name = json.loads(self.open_board(replacement)[2])["name"]
+                before = kanvas.read_text_file(replacement)
+                stale_edit = json.loads(body)
+                stale_edit["title"] = "Edit from the closed tab"
+                status, _, _ = self.request("PUT", api, json.dumps(stale_edit).encode("utf-8"),
+                                            {"Content-Type": "application/json", "If-Match": headers["ETag"]})
+                # A 409 is unsafe too: the browser would replay the change onto its response.
+                self.assertEqual(status, 404)
+                self.assertEqual(self.request("GET", api)[0], 404)
+                self.assertEqual(kanvas.read_text_file(replacement), before)
+                self.assertNotEqual(replacement_name, name)
+                self.assertEqual(self.request("GET", f"/{replacement_name}/api/board")[0], 200)
+                self.assertEqual(json.loads(self.open_board(original)[2])["name"], name)
+                self.assertEqual(self.request("GET", api)[2], body)
+
     def test_close_requires_this_computer_and_json(self):
         for headers, expected in (({}, 415), ({"Content-Type": "text/plain"}, 415),
                                   ({"Content-Type": "application/json", "Host": "evil.example"}, 403),
@@ -2755,13 +2780,66 @@ class RememberTests(TempBoard):
         other, gone = self.other("other"), self.other("gone")
         first.add_board(other)
         first.add_board(gone)
-        self.assertEqual(self.remembered(), {"boards": [self.path, other, gone], "phone": False})
+        self.assertEqual(self.remembered(), {"boards": [self.path, other, gone], "phone": False,
+                                            "names": {kanvas.board_name(path): os.path.normcase(os.path.realpath(path))
+                                                      for path in (self.path, other, gone)}})
         first.server_close()
         os.remove(gone)
         again = self.start()
         self.assertEqual([(b["name"], b["path"]) for b in again.board_list()], [(kanvas.board_name(self.path), self.path), ("other", other)])
         self.assertFalse(again.phone_wanted)
         self.assertEqual(self.remembered()["boards"], [self.path, other])
+
+    def test_closed_names_and_collision_suffixes_survive_restarts(self):
+        first, second, third = [self.other(os.path.join(parent, "project")) for parent in ("a", "b", "c")]
+        server = self.start(self.path)
+        self.assertEqual(server.add_board(first), "project")
+        self.assertEqual(server.add_board(second), "project-2")
+        server.remove_board("project")
+        server.server_close()
+        again = self.start()
+        self.assertIsNone(again.board_path("project"))
+        self.assertEqual(again.board_path("project-2"), second)
+        self.assertEqual(again.add_board(third), "project-3")
+        self.assertEqual(again.add_board(first), "project")
+        self.assertEqual(again.board_path("project"), first)
+
+    def test_deleted_board_names_stay_reserved_after_restart(self):
+        original, replacement = [self.other(os.path.join(parent, "project")) for parent in ("a", "b")]
+        server = self.start(self.path)
+        server.add_board(original)
+        os.remove(original)
+        with mock.patch.object(kanvas.time, "monotonic", return_value=10):
+            server.service_actions()
+        with mock.patch.object(kanvas.time, "monotonic", return_value=13):
+            server.service_actions()
+        self.assertIsNone(server.board_path("project"))
+        server.server_close()
+        again = self.start()
+        self.assertEqual(again.add_board(replacement), "project-2")
+        self.assertIsNone(again.board_path("project"))
+
+    def test_legacy_state_reserves_missing_boards_before_restoring_others(self):
+        first, second = [self.other(os.path.join(parent, "project")) for parent in ("a", "b")]
+        os.remove(first)
+        os.makedirs(os.path.dirname(self.state))
+        with open(self.state, "w") as f:
+            json.dump({"boards": [first, second], "phone": False}, f)
+        server = self.start()
+        self.assertIsNone(server.board_path("project"))
+        self.assertEqual(server.board_path("project-2"), second)
+
+    def test_bad_name_reservations_do_not_break_restore(self):
+        os.makedirs(os.path.dirname(self.state))
+        for names in (None, [], "bad", {"api": self.path, "../bad": self.path, ".": self.path,
+                                        "relative": "relative.json", "number": 5, "null": None}):
+            with self.subTest(names=names):
+                with open(self.state, "w") as f:
+                    json.dump({"boards": [self.path], "names": names}, f)
+                server = self.start()
+                self.assertEqual(server.board_names, {kanvas.board_name(self.path): os.path.normcase(os.path.realpath(self.path))})
+                self.assertEqual([b["path"] for b in server.board_list()], [self.path])
+                server.server_close()
 
     def test_a_board_served_again_keeps_its_place(self):
         other = self.other("other")

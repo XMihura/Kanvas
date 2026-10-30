@@ -1890,6 +1890,8 @@ class BoardServer(ThreadingHTTPServer):
         self.phone = []  # base URLs of the Tailscale listener, by name and by address
         self.phone_lock = threading.Lock()
         self.boards = share.boards if share else {}  # name -> path, in the order the boards were opened
+        # A closed URL must never point at another file: old tabs can still read and replay writes to it.
+        self.board_names = share.board_names if share else {}  # name -> original canonical path, including closed boards
         self.boards_lock = share.boards_lock if share else threading.RLock()
         self.missing_boards = {}  # name -> first time the file was absent
         self.stop_at = None
@@ -1971,16 +1973,25 @@ class BoardServer(ThreadingHTTPServer):
             if self.stopping:
                 raise KanvasError("Kanvas is stopping after its last board closed; run `kanvas serve` again")
             self.stop_at = None
-            for name, known in self.boards.items():
-                if same_file(known, path):
-                    return name
-            base = name = board_name(path)
-            n = 2
-            while name in self.boards or name == "api":
-                name, n = f"{base}-{n}", n + 1
+            name = self._reserve_board_name(path)
+            if name in self.boards:
+                return name
             self.boards[name] = path
             if save:
                 self.save_state()
+        return name
+
+    def _reserve_board_name(self, path):
+        """Called under boards_lock. Keep the same URL when the original file is reopened."""
+        identity = os.path.normcase(os.path.realpath(path))
+        for name, known in self.board_names.items():
+            if known == identity:
+                return name
+        base = name = board_name(path)
+        n = 2
+        while name in self.board_names or name == "api":
+            name, n = f"{base}-{n}", n + 1
+        self.board_names[name] = identity
         return name
 
     def remove_board(self, name):
@@ -2027,7 +2038,7 @@ class BoardServer(ThreadingHTTPServer):
         if not self.remember:
             return
         with self.boards_lock:
-            state = {"boards": list(self.boards.values()), "phone": bool(self.phone)}
+            state = {"boards": list(self.boards.values()), "phone": bool(self.phone), "names": self.board_names}
             try:
                 os.makedirs(os.path.dirname(self.remember), exist_ok=True)
                 write_text_atomic(self.remember, json.dumps(state, indent=2, ensure_ascii=False) + "\n")
@@ -2041,6 +2052,20 @@ class BoardServer(ThreadingHTTPServer):
         except (OSError, ValueError):
             return False
         boards = state.get("boards") if isinstance(state, dict) else None
+        names = state.get("names") if isinstance(state, dict) else None
+        with self.boards_lock:
+            for name, path in names.items() if isinstance(names, dict) else []:
+                if (re.fullmatch(r"[\w.-]+", name) and name.strip("-.") and name != "api"
+                        and isinstance(path, str) and os.path.isabs(path) and "\0" not in path):
+                    self.board_names[name] = os.path.normcase(os.path.abspath(path))
+            # Older state files have only the ordered paths. Reserve even missing boards' names,
+            # so skipping one cannot move a later project into an old tab's URL after a restart.
+            for path in boards if isinstance(boards, list) else []:
+                if isinstance(path, str):
+                    try:
+                        self._reserve_board_name(path)
+                    except (OSError, ValueError):
+                        continue
         for path in boards if isinstance(boards, list) else []:
             try:
                 if isinstance(path, str) and "tasks" in json.loads(read_text_file(path)):

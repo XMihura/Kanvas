@@ -375,6 +375,22 @@ class BrowserSmokeTests(unittest.TestCase):
         self.assertEqual(self.page.js("document.querySelector('#sync .label').textContent"), "Board closed")
         self.assertIsNone(self.server.poll())
 
+    def test_closed_tab_does_not_switch_to_another_project_with_the_same_name(self):
+        self.open_other_board()
+        replacement = os.path.join(self.dir, "new", "demo", "kanvas.json")
+        os.makedirs(os.path.dirname(replacement))
+        shutil.copyfile(self.path, replacement)
+        before = read(replacement)
+        self.load("#BE-03")
+        port = urllib.parse.urlsplit(self.url).port
+        self.cli("close", "--port", str(port))
+        url, _ = kanvas.join_running(f"http://127.0.0.1:{port}/", replacement)
+        self.assertTrue(url.endswith("/demo-2/"), url)
+        self.until("the old tab to stay closed", "document.querySelector('#sync .label').textContent === 'Board closed'")
+        self.type_note("This belongs to the original board")
+        self.assertEqual(read(replacement), before)
+        self.assertEqual(self.page.js("location.pathname"), "/demo/")
+
     def test_deleting_the_last_board_stops_without_a_browser_poll(self):
         os.remove(self.path)
         self.assertEqual(self.server.wait(timeout=10), 0)
