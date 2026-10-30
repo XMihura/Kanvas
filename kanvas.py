@@ -2017,6 +2017,8 @@ def page(title, body):
 
 LOCAL_NAMES = frozenset({"localhost", "127.0.0.1", "[::1]"})
 DEFAULT_PORT = 8765
+MISSING_BOARD_GRACE = 2.0
+EMPTY_SERVER_GRACE = 2.0
 
 
 def state_file():
@@ -2054,7 +2056,12 @@ class BoardServer(ThreadingHTTPServer):
         self.phone = []  # base URLs of the Tailscale listener, by name and by address
         self.phone_lock = threading.Lock()
         self.boards = share.boards if share else {}  # name -> path, in the order the boards were opened
-        self.boards_lock = share.boards_lock if share else threading.Lock()
+        # A closed URL must never point at another file: old tabs can still read and replay writes to it.
+        self.board_names = share.board_names if share else {}  # name -> original canonical path, including closed boards
+        self.boards_lock = share.boards_lock if share else threading.RLock()
+        self.missing_boards = {}  # name -> first time the file was absent
+        self.stop_at = None
+        self.stopping = False
         if path:
             self.add_board(path)
 
@@ -2129,28 +2136,80 @@ class BoardServer(ThreadingHTTPServer):
         """Open the board at `path` and return its name. A board that is already open keeps its name."""
         path = os.path.abspath(path)
         with self.boards_lock:
-            for name, known in self.boards.items():
-                if same_file(known, path):
-                    return name
-            base = name = board_name(path)
-            n = 2
-            while name in self.boards or name == "api":
-                name, n = f"{base}-{n}", n + 1
+            if self.stopping:
+                raise KanvasError("Kanvas is stopping after its last board closed; run `kanvas serve` again")
+            self.stop_at = None
+            name = self._reserve_board_name(path)
+            if name in self.boards:
+                return name
             self.boards[name] = path
-        if save:
-            self.save_state()
+            if save:
+                self.save_state()
         return name
+
+    def _reserve_board_name(self, path):
+        """Called under boards_lock. Keep the same URL when the original file is reopened."""
+        identity = os.path.normcase(os.path.realpath(path))
+        for name, known in self.board_names.items():
+            if known == identity:
+                return name
+        base = name = board_name(path)
+        n = 2
+        while name in self.board_names or name == "api":
+            name, n = f"{base}-{n}", n + 1
+        self.board_names[name] = identity
+        return name
+
+    def remove_board(self, name):
+        """Forget an open board without touching its file; stop after the last one closes."""
+        with self.boards_lock:
+            if name not in self.boards:
+                return False
+            del self.boards[name]
+            self.missing_boards.pop(name, None)
+            self.save_state()
+            if not self.boards:
+                # Let the DELETE response and other tabs' next poll arrive before exiting.
+                self.stop_at = time.monotonic() + EMPTY_SERVER_GRACE
+            return True
+
+    def service_actions(self):
+        """Notice deleted/moved boards even when no browser is polling."""
+        if not self.opens_boards:
+            return
+        now = time.monotonic()
+        with self.boards_lock:
+            for name, path in list(self.boards.items()):
+                try:
+                    os.stat(path)
+                except (FileNotFoundError, NotADirectoryError):
+                    since = self.missing_boards.setdefault(name, now)
+                    if now - since >= MISSING_BOARD_GRACE:
+                        self.remove_board(name)
+                        if not self.quiet:
+                            print(f"Closed {name}: its board file is missing", flush=True)
+                except OSError:
+                    # Permission and temporary I/O errors do not mean the file was deleted.
+                    self.missing_boards.pop(name, None)
+                else:
+                    self.missing_boards.pop(name, None)
+            if self.stop_at is not None and now >= self.stop_at and not self.boards and not self.stopping:
+                self.stopping = True
+                if not self.quiet:
+                    print("No boards remain open. Stopping Kanvas.", flush=True)
+                # shutdown() must run outside the serve_forever thread.
+                threading.Thread(target=self.shutdown, daemon=True).start()
 
     def save_state(self):
         if not self.remember:
             return
         with self.boards_lock:
-            state = {"boards": list(self.boards.values()), "phone": bool(self.phone)}
-        try:
-            os.makedirs(os.path.dirname(self.remember), exist_ok=True)
-            write_text_atomic(self.remember, json.dumps(state, indent=2, ensure_ascii=False) + "\n")
-        except OSError as e:
-            print(f"Could not remember the open boards in {self.remember}: {e}", file=sys.stderr)
+            state = {"boards": list(self.boards.values()), "phone": bool(self.phone), "names": self.board_names}
+            try:
+                os.makedirs(os.path.dirname(self.remember), exist_ok=True)
+                write_text_atomic(self.remember, json.dumps(state, indent=2, ensure_ascii=False) + "\n")
+            except OSError as e:
+                print(f"Could not remember the open boards in {self.remember}: {e}", file=sys.stderr)
 
     def restore(self):
         """Open the boards remembered from the last run that are still boards; return whether phones could connect then."""
@@ -2159,6 +2218,20 @@ class BoardServer(ThreadingHTTPServer):
         except (OSError, ValueError):
             return False
         boards = state.get("boards") if isinstance(state, dict) else None
+        names = state.get("names") if isinstance(state, dict) else None
+        with self.boards_lock:
+            for name, path in names.items() if isinstance(names, dict) else []:
+                if (re.fullmatch(r"[\w.-]+", name) and name.strip("-.") and name != "api"
+                        and isinstance(path, str) and os.path.isabs(path) and "\0" not in path):
+                    self.board_names[name] = os.path.normcase(os.path.abspath(path))
+            # Older state files have only the ordered paths. Reserve even missing boards' names,
+            # so skipping one cannot move a later project into an old tab's URL after a restart.
+            for path in boards if isinstance(boards, list) else []:
+                if isinstance(path, str):
+                    try:
+                        self._reserve_board_name(path)
+                    except (OSError, ValueError):
+                        continue
         for path in boards if isinstance(boards, list) else []:
             try:
                 if isinstance(path, str) and is_board_file(path):
@@ -2294,7 +2367,7 @@ class BoardHandler(BaseHTTPRequestHandler):
                 body += "<p><small>Run <code>kanvas serve</code> in a project to open its board here.</small></p>"
             return self._send(200, page("Kanvas", body), "text/html; charset=utf-8")
         if parts == ["api", "boards"]:
-            info = {"kanvas": VERSION, "boards": self._board_list()}
+            info = {"kanvas": VERSION, "boards": self._board_list(), "manage": self._may_manage()}
             return self._send(200, json.dumps(info, ensure_ascii=False).encode("utf-8"))
         name, rest = parts[0], parts[1:]
         path = self.server.board_path(name)
@@ -2410,7 +2483,10 @@ class BoardHandler(BaseHTTPRequestHandler):
             load_board(path)
         except (KanvasError, ValueError, AttributeError, OSError) as e:
             return self._error(400, str(e))
-        name = self.server.add_board(path)
+        try:
+            name = self.server.add_board(path)
+        except KanvasError as e:
+            return self._error(503, str(e))
         if not self.server.quiet:
             print(f"[{time.strftime('%H:%M:%S')}] opened {name}: {path}", flush=True)
         info = {"name": name, "url": f"/{quote(name)}/"}
@@ -2419,10 +2495,20 @@ class BoardHandler(BaseHTTPRequestHandler):
         self._send(200, json.dumps(info, ensure_ascii=False).encode("utf-8"))
 
     def do_DELETE(self):
-        """Closes Kanvas to phones again."""
+        """Close a board, or close Kanvas to phones again, from this computer only."""
         if not self._host_allowed():
             return self._error(403, "Host not allowed")
         parts = self._route()
+        if len(parts) == 3 and parts[:2] == ["api", "boards"]:
+            if not self._may_manage():
+                return self._error(403, "Boards close only from the computer running Kanvas")
+            if self._read_json() is None:
+                return
+            with self.server.boards_lock:
+                if not self.server.remove_board(parts[2]):
+                    return self._error(404, "That board is not open in Kanvas")
+                info = {"boards": self._board_list(), "stopping": not self.server.boards}
+            return self._send(200, json.dumps(info, ensure_ascii=False).encode("utf-8"))
         if parts[1:] != ["api", "phone"] or self.server.board_path(parts[0]) is None:
             return self._error(404, "Not found")
         if not self._may_manage():
@@ -2543,6 +2629,33 @@ def join_running(url, path):
         raise KanvasError(f"The Kanvas running at {url} did not open the board: {message}")
     except (OSError, ValueError, KeyError) as e:
         raise KanvasError(f"The Kanvas running at {url} did not answer: {e}")
+
+
+def cmd_close(args):
+    path = board_path(args, must_exist=False)
+    running = find_running(args.port)
+    if not running:
+        print("Kanvas is not running; the board is not open.")
+        return
+    url, _ = running
+    try:
+        with LOCAL.open(url + "api/boards", timeout=5) as r:
+            boards = json.loads(r.read().decode("utf-8"))["boards"]
+        found = next((b for b in boards if isinstance(b.get("path"), str) and same_file(b["path"], path)), None)
+        if not found:
+            print(f"{path} is not open in Kanvas.")
+            return
+        req = urllib.request.Request(url + "api/boards/" + quote(found["name"], safe=""), b"{}",
+                                     {"Content-Type": "application/json"}, method="DELETE")
+        with LOCAL.open(req, timeout=5) as r:
+            info = json.loads(r.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        raise KanvasError(f"Kanvas could not close the board (HTTP {e.code}); check that the server is up to date")
+    except (OSError, ValueError, KeyError) as e:
+        raise KanvasError(f"The Kanvas running at {url} did not answer: {e}")
+    print(f"Closed {found['name']}. Its board file was kept.")
+    if info.get("stopping"):
+        print("That was the last board. Kanvas is stopping.")
 
 
 TAILSCALE_PATHS = (
@@ -2852,6 +2965,8 @@ def service_status():
     print(f"Remembered boards ({state_file()}):" if boards else "Remembered boards: none yet")
     for b in boards:
         print(f"  {b}")
+    if boards:
+        print("Close a board with `kanvas close` in its project, or `kanvas -b PATH close`.")
 
 
 def cmd_service(args):
@@ -2980,6 +3095,9 @@ def build_parser():
     p.add_argument("--tailscale", action="store_true", help="also open the boards to your phone and other devices on your Tailscale network")
     p.add_argument("--saved", action="store_true", help="serve only the boards open last time, without a project of its own (for `kanvas service`)")
     p.add_argument("--no-open", action="store_true", help="do not open a browser")
+    p = add("close", cmd_close, "close this board without deleting its file; the last board stops Kanvas")
+    p.add_argument("--port", type=int, default=DEFAULT_PORT,
+                   help="look for Kanvas on this port and the next 19 (default: %(default)s)")
     p = add("service", cmd_service, "start Kanvas when you log in, so your boards are always open")
     p.add_argument("action", choices=["install", "uninstall", "status"])
     p.add_argument("--tailscale", action="store_true", help="also open the boards to your phone over Tailscale")
