@@ -391,6 +391,9 @@ class BrowserSmokeTests(unittest.TestCase):
         self.page.js(f"{NOTE_BOX}.focus(); document.execCommand('insertText', false, 'On BE-03:');")
         self.paste_image(NOTE_BOX)
         self.wait_for_upload()
+        # Leaving the page now would lose the image, which is in no editor yet.
+        leave = "(() => { const e = new Event('beforeunload', { cancelable: true }); dispatchEvent(e); return e.defaultPrevented; })()"
+        self.assertTrue(self.page.js(leave))
         self.open_task("BE-02")
         self.page.js(f"{NOTE_BOX}.focus(); document.execCommand('insertText', false, 'On BE-02');")
         self.let_upload_through()

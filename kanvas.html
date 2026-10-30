@@ -5303,6 +5303,7 @@ function setThemePref(theme) { prefs.theme = theme; savePrefs(); applyTheme(); }
 // cursor. Clicking an image shows it at full size.
 const IMAGE_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
 const imageFiles = (dt) => [...(dt && dt.files) || []].filter((f) => f.type.startsWith("image/"));
+let uploads = 0;
 const takesImages = (el) => el instanceof HTMLTextAreaElement && !el.readOnly && !el.disabled && !el.matches(".p-title");
 
 async function insertImages(ta, files) {
@@ -5316,6 +5317,8 @@ async function insertImages(ta, files) {
   const label = ta.getAttribute("aria-label"), noteBox = !!ta.closest(".note-form");
   const before = ta.value, start = ta.selectionStart, end = ta.selectionEnd, marks = [];
   ta.classList.add("uploading");
+  // Until the Markdown is in, leaving the page would lose the images.
+  uploads++;
   for (const f of files) {
     try {
       if (!IMAGE_TYPES.includes(f.type)) throw new Error("only PNG, JPEG, GIF and WebP images can be attached");
@@ -5325,6 +5328,7 @@ async function insertImages(ta, files) {
       toast(`Cannot attach ${f.name || "the image"}: ${e.message}`, "error");
     }
   }
+  uploads--;
   ta.classList.remove("uploading");
   if (!marks.length) return;
   const md = marks.join("\n");
@@ -5649,7 +5653,7 @@ function toggleDone() {
 // (drafts in the panel, text a failed save gave back, a title being edited, a dialog being filled in).
 function unsaved() {
   if (!store || store.readOnly) return false;
-  if (pending || (store.kind === "memory" && store.dirty)) return true;
+  if (pending || uploads || (store.kind === "memory" && store.dirty)) return true;
   const t = ui.selected && get(ui.selected), filled = (el) => !!el.value.trim();
   if ([...drafts.note].some(([id, text]) => text.trim() && get(id))) return true;
   if ([...drafts.back.keys()].some((k) => IX.has(k)) || drafts.title != null || drafts.boardTitle != null) return true;
