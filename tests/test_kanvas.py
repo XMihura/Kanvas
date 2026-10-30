@@ -2,6 +2,7 @@
 
 import argparse
 import atexit
+import base64
 import contextlib
 import http.client
 import io
@@ -43,6 +44,14 @@ def task(tid, state="todo", group=None, deps=(), **extra):
     t = {"id": tid, "title": f"Task {tid}", "state": state, "group": group, "deps": list(deps)}
     t.update(extra)
     return t
+
+
+# Hand-edited tasks with a field of the wrong type, and the error each one gives.
+WRONG_TYPES = [
+    (task("G-01", ["todo"]), "Task G-01: 'state' must be a string"),
+    (task("G-01", group=["A"]), "Task G-01: 'group' must be a string or null"),
+    (task("G-01", notes=[{"at": "x", "by": "h", "text": 5}]), "Task G-01: note 'text' must be a string"),
+]
 
 
 def run_html_js(test, code, stdin, sections=()):
@@ -160,6 +169,13 @@ class FormatTests(unittest.TestCase):
     def test_newer_format_is_rejected(self):
         with self.assertRaises(kanvas.KanvasError):
             kanvas.parse_board('{"kanvas": 99, "groups": [], "tasks": []}')
+
+    def test_fields_of_the_wrong_type_are_rejected(self):
+        for bad, message in WRONG_TYPES:
+            with self.subTest(message=message):
+                with self.assertRaises(kanvas.KanvasError) as cm:
+                    kanvas.parse_board(json.dumps(dict(kanvas.new_board(), tasks=[bad])))
+                self.assertEqual(str(cm.exception), message)
 
     def assert_writers_agree(self, text):
         out = run_html_js(self, "process.stdout.write(serialize(normalize(input)));", text)
@@ -862,6 +878,29 @@ class MarkdownTests(unittest.TestCase):
         out = json.loads(run_html_js(self, code, json.dumps(cases), [("function inlineMd(", "\n// ----")]))
         self.assertEqual(out, [True, True])
 
+    def render_images(self, srcs, store):
+        """markdown() of each source, with `store` as the page's store (None for no store)."""
+        code = ("const get = () => null;\n"
+                f"var store = {store};\n"
+                "process.stdout.write(JSON.stringify(input.map((src) => markdown(src))));")
+        return json.loads(run_html_js(self, code, json.dumps(srcs), [("function inlineMd(", "\n// ----")]))
+
+    def test_the_boards_own_images_show_where_the_store_reaches_them(self):
+        img = "kanvas-files/0123456789abcdef.png"
+        srcs = [f"![Login \"form\"]({img})", f"See ![]({img}) here", "![x](https://example.com/a.png)",
+                "![x](kanvas-files/../kanvas.json)", "![x](kanvas-files/0123456789abcdef.svg)", f"[link]({img})"]
+        served = self.render_images(srcs, "{ imageUrl: (ref) => ref }")
+        self.assertEqual(served, [
+            f'<p><img src="{img}" alt="Login &quot;form&quot;" loading="lazy"></p>',
+            f'<p>See <img src="{img}" alt="" loading="lazy"> here</p>',
+            # Other images stay links, and nothing else counts as one of the board's images.
+            f"<p>{link('https://example.com/a.png', 'x')}</p>", "<p>x</p>", "<p>x</p>", "<p>link</p>",
+        ])
+        # Without a store that reaches the images, as for a board opened from a file, they stay text.
+        for store in ("null", "{}"):
+            with self.subTest(store=store):
+                self.assertEqual(self.render_images(srcs[:2], store), ["<p>Login &quot;form&quot;</p>", f"<p>See {img} here</p>"])
+
 
 class BoardViewTests(unittest.TestCase):
     """The board view on phones, where one column fills the screen."""
@@ -1282,6 +1321,16 @@ class WorkflowTests(TempBoard):
         board["tasks"].append(task("DV-05", deps=["DV-77"]))
         write_board(self.path, board)
         self.assertNotEqual(self.run_cli("check", check=False)[0], 0)
+
+    def test_commands_refuse_fields_of_the_wrong_type(self):
+        for bad, message in WRONG_TYPES:
+            write_board(self.path, dict(kanvas.new_board(), tasks=[bad]))
+            for args in (["status"], ["show", "G-01"], ["check"]):
+                with self.subTest(args=args, message=message):
+                    code, out, err = self.run_cli(*args, check=False)
+                    self.assertEqual(code, 1, out)
+                    self.assertRegex(err, r"\AError: [^\n]+\n\Z")
+                    self.assertIn(message, err)
 
 
 class QuestionTests(TempBoard):
@@ -1998,9 +2047,36 @@ class ImportExportTests(TempBoard):
         self.assertIn("--force", self.fails("import", "Project.canvas"))
         self.run_cli("import", "Project.canvas", "--force")
 
+    def test_import_refuses_a_malformed_canvas(self):
+        card = {"id": "a", "type": "text", "text": "## AB-1 x", "color": "1", "x": 10, "y": 10, "width": 10, "height": 10}
+        group = {"type": "group", "x": 0, "y": 0, "width": 100, "height": 100}
+        cases = [
+            ([], "JSON object"),
+            ({"nodes": {"a": card}}, '"nodes"'),
+            ({"nodes": [card], "edges": 5}, '"edges"'),
+            ({"nodes": [card, "b"]}, '"nodes"'),
+            ({"nodes": [{"type": "text", "text": "## AB-1 x", "color": "1"}]}, '"id"'),
+            ({"nodes": [card, group]}, '"id"'),
+            ({"nodes": [dict(card, x="10")]}, "numbers"),
+            ({"nodes": [card, dict(group, id="g", width=None)]}, "numbers"),
+            ({"nodes": [dict(card, text=["## AB-1 x"])]}, '"text"'),
+            ({"nodes": [card], "edges": [{"fromNode": ["a"], "toNode": "a"}]}, '"fromNode"'),
+        ]
+        before = self.raw()
+        for canvas, problem in cases:
+            with self.subTest(canvas=canvas):
+                with open(os.path.join(self.dir, "Bad.canvas"), "w", encoding="utf-8") as f:
+                    json.dump(canvas, f)
+                code, _, err = self.run_cli("import", "Bad.canvas", check=False)
+                self.assertEqual(code, 1, err)
+                self.assertIn("Error: Bad.canvas is not an Obsidian canvas: ", err)
+                self.assertIn(problem, err)
+                self.assertNotIn("Traceback", err)
+                self.assertEqual(self.raw(), before)
+
     def test_export_snapshot(self):
         board = self.board()
-        board["tasks"].append(task("G-01", desc="</script><script>alert(1)</script>"))
+        board["tasks"].append(task("G-01", title="Café \ud83d", desc="</script><script>alert(1)</script>"))
         write_board(self.path, board)
         self.run_cli("export", "snap.html")
         with open(os.path.join(self.dir, "snap.html"), encoding="utf-8") as f:
@@ -2010,6 +2086,8 @@ class ImportExportTests(TempBoard):
         self.assertEqual(m.group(1), kanvas.board_name(self.path))
         self.assertNotIn("<", m.group(2))
         self.assertEqual(json.loads(m.group(2))["tasks"][0]["desc"], "</script><script>alert(1)</script>")
+        self.assertEqual(json.loads(m.group(2))["tasks"][0]["title"], "Café \ud83d")
+        self.assertIn("Café", m.group(2))
 
     def test_an_untitled_board_goes_by_its_name_in_the_page(self):
         """As on the boards page: the name in its address when served, the one export recorded, else "Kanvas"."""
@@ -2022,6 +2100,90 @@ class ImportExportTests(TempBoard):
         cases = [["Mine", "server", None], ["", "server", None], ["", "snapshot", "exported"], ["", "file", None], ["", None, None]]
         out = run_html_js(self, code, json.dumps(cases), [("const boardHere =", "\nasync function refreshBoards")])
         self.assertEqual(json.loads(out), ["Mine", "my-project", "exported", "Kanvas", "Kanvas"])
+
+
+PNG = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==")
+
+
+class ImageTests(TempBoard):
+    """Images live next to the board in kanvas-files/, named by a hash of their bytes."""
+
+    def write(self, name, data):
+        path = os.path.join(self.dir, name)
+        with open(path, "wb") as f:
+            f.write(data)
+        return path
+
+    def test_images_are_kept_once_by_their_hash(self):
+        ref = kanvas.store_image(self.path, PNG)
+        self.assertRegex(ref, r"^kanvas-files/[0-9a-f]{16}\.png$")
+        self.assertEqual(kanvas.store_image(self.path, PNG), ref)
+        self.assertEqual(os.listdir(os.path.join(self.dir, "kanvas-files")), [ref.split("/")[1]])
+        with open(kanvas.image_path(self.path, ref), "rb") as f:
+            self.assertEqual(f.read(), PNG)
+        for data in (b"<svg xmlns='http://www.w3.org/2000/svg'/>", b"<html>", b""):
+            with self.subTest(data=data):
+                self.assertRaises(kanvas.KanvasError, kanvas.store_image, self.path, data)
+        self.assertEqual([kanvas.image_type(d) for d in (b"\xff\xd8\xff\xe0", b"GIF89a..", b"RIFF\0\0\0\0WEBPVP8 ")], ["jpg", "gif", "webp"])
+        for bad in ("kanvas-files/../kanvas.json", "kanvas-files/0123456789abcdef.svg", "elsewhere/0123456789abcdef.png"):
+            self.assertIsNone(kanvas.image_path(self.path, bad))
+
+    def test_attach_adds_a_note_with_the_images(self):
+        shot = self.write("login [form].png", PNG)
+        _, out, _ = self.run_cli("attach", "DV-02", shot, "-m", "The login form after the fix", "--as", "claude")
+        ref = kanvas.store_image(self.path, PNG)
+        note = self.get("DV-02")["notes"][-1]
+        self.assertEqual((note["by"], note["text"]), ("claude", f"The login form after the fix\n\n![login (form)]({ref})"))
+        self.assertIn(f"![login (form)]({ref})", out)
+        self.run_cli("attach", "DV-03", shot, shot)
+        self.assertEqual(self.get("DV-03")["notes"][-1]["text"], f"![login (form)]({ref})\n\n![login (form)]({ref})")
+        before = self.raw()
+        self.assertIn("Only PNG, JPEG, GIF and WebP", self.fails("attach", "DV-02", self.write("x.svg", b"<svg/>")))
+        self.assertIn("Cannot read", self.fails("attach", "DV-02", "missing.png"))
+        self.assertIn("is done", self.fails("attach", "DV-01", shot))
+        self.assertEqual(self.raw(), before)
+
+    def test_check_warns_about_missing_and_unused_images(self):
+        used = kanvas.store_image(self.path, PNG)
+        unused = kanvas.store_image(self.path, PNG + b"x")
+        missing = "kanvas-files/ffffffffffffffff.png"
+        board = self.board()
+        board["tasks"][1]["desc"] = f"![a]({used})"
+        board["tasks"][2]["notes"] = [{"at": "2026-10-28T10:00:00Z", "by": "human", "text": f"![b]({missing})"}]
+        write_board(self.path, board)
+        code, out, _ = self.run_cli("check")
+        self.assertEqual(code, 0)
+        self.assertIn(f"warning: DV-03: image {missing} is missing", out)
+        self.assertIn(f"warning: {unused} is not used by any task", out)
+        self.assertNotIn(f"warning: {used}", out)
+
+    def test_export_carries_the_images(self):
+        ref = kanvas.store_image(self.path, PNG)
+        board = self.board()
+        board["tasks"][1]["desc"] = f"![a]({ref}) and ![gone](kanvas-files/ffffffffffffffff.png)"
+        write_board(self.path, board)
+        _, out, _ = self.run_cli("export", "snap.html")
+        self.assertIn("and 1 image.", out)
+        with open(os.path.join(self.dir, "snap.html"), encoding="utf-8") as f:
+            html = f.read()
+        m = re.search(r'<script id="kanvas-files" type="application/json">(.*?)</script>', html, re.S)
+        self.assertEqual(json.loads(m.group(1)), {ref: "data:image/png;base64," + base64.b64encode(PNG).decode("ascii")})
+
+    def test_images_attached_through_a_link_sit_next_to_the_real_board(self):
+        link = os.path.join(self.dir, "proj", "kanvas.json")
+        os.mkdir(os.path.dirname(link))
+        try:
+            os.symlink(os.path.join("..", "kanvas.json"), link)
+        except (OSError, NotImplementedError):
+            self.skipTest("this system cannot create symbolic links")
+        self.run_cli("-b", link, "attach", "DV-02", self.write("shot.png", PNG))
+        ref = re.search(r"\((kanvas-files/[^)]+)\)", self.get("DV-02")["notes"][-1]["text"]).group(1)
+        self.assertTrue(os.path.isfile(os.path.join(self.dir, ref)))
+        self.assertFalse(os.path.exists(os.path.join(self.dir, "proj", kanvas.FILES_DIR)))
+        self.assertEqual(kanvas.image_path(link, ref), kanvas.image_path(self.path, ref))
+        # Through the real path, the board finds the image it was given through the link.
+        self.assertNotIn("missing", self.run_cli("check")[1])
+        self.assertIn("and 1 image.", self.run_cli("export", "snap.html")[1])
 
 
 class ConcurrencyTests(TempBoard):
@@ -2038,6 +2200,20 @@ class ConcurrencyTests(TempBoard):
         self.assertEqual(len(self.get("DV-02")["notes"]), workers * per_worker)
         leftovers = [f for f in os.listdir(self.dir) if f.endswith((".lock", ".tmp"))]
         self.assertEqual(leftovers, [])
+
+    def test_a_failed_write_leaves_no_temp_file(self):
+        """A full disk, or text that cannot be encoded, fails after the temporary file exists."""
+        def full_disk(*args, **kwargs):
+            f = open(*args, **kwargs)
+            f.write = mock.Mock(side_effect=OSError("No space left on device"))
+            return f
+        before = self.raw()
+        with mock.patch.object(kanvas, "open", side_effect=full_disk, create=True), self.assertRaises(OSError):
+            kanvas.write_text_atomic(self.path, "{}")
+        with self.assertRaises(UnicodeEncodeError):
+            kanvas.write_text_atomic(self.path, "Lone \ud83d surrogate")
+        self.assertEqual(self.raw(), before)
+        self.assertEqual([f for f in os.listdir(self.dir) if f.endswith(".tmp")], [])
 
     def test_stale_lock_is_cleared(self):
         lock = self.path + ".lock"
@@ -2061,6 +2237,22 @@ class ConcurrencyTests(TempBoard):
         with mock.patch.object(kanvas, "LOCK_TIMEOUT", 0.2):
             with self.assertRaisesRegex(kanvas.KanvasError, "Board is busy"):
                 kanvas.mutate(self.path, lambda board: None)
+
+    def test_writes_through_a_link_reach_the_board(self):
+        link = os.path.join(self.dir, "proj", "kanvas.json")
+        os.mkdir(os.path.dirname(link))
+        try:
+            os.symlink(os.path.join("..", "kanvas.json"), link)
+        except (OSError, NotImplementedError):
+            self.skipTest("this system cannot create symbolic links")
+        self.run_cli("-b", link, "note", "DV-02", "through a link")
+        self.assertTrue(os.path.islink(link))
+        self.assertEqual(self.get("DV-02")["notes"][-1]["text"], "through a link")
+        # The lock sits next to the real file, so writers through the link wait for the board's lock.
+        open(self.path + ".lock", "w").close()
+        with mock.patch.object(kanvas, "LOCK_TIMEOUT", 0.2):
+            with self.assertRaisesRegex(kanvas.KanvasError, "Board is busy"):
+                kanvas.mutate(link, lambda board: None)
 
     def test_unwritable_folder_is_reported(self):
         started = time.monotonic()
@@ -2260,6 +2452,14 @@ class ServerTests(TempBoard):
         self.assertEqual(status, 403)
         self.assertEqual(self.raw(), before)
 
+    def test_rejects_fields_of_the_wrong_type(self):
+        before = self.raw()
+        for bad, message in WRONG_TYPES:
+            with self.subTest(message=message):
+                status, _, body = self.put(dict(kanvas.new_board(), tasks=[bad]), kanvas.etag_of(before))
+                self.assertEqual((status, json.loads(body)["error"]), (400, message))
+        self.assertEqual(self.raw(), before)
+
     def test_writes_need_the_version_they_change_and_a_task_list(self):
         before = self.raw()
         board = json.loads(before)
@@ -2290,6 +2490,39 @@ class ServerTests(TempBoard):
                     status = s.makefile("rb").readline().split()[1]
                     self.assertEqual(status, b"400")
         self.assertEqual(self.raw(), before)
+
+    def test_uploads_and_serves_images(self):
+        files = f"/{self.name}/api/files"
+        before = self.raw()
+        status, _, body = self.request("POST", files, PNG, {"Content-Type": "image/png"})
+        self.assertEqual(status, 200)
+        ref = json.loads(body)["path"]
+        self.assertEqual(ref, kanvas.store_image(self.path, PNG))
+        status, headers, body = self.request("GET", f"/{self.name}/{ref}")
+        self.assertEqual((status, body, headers["Content-Type"]), (200, PNG, "image/png"))
+        self.assertIn("immutable", headers["Cache-Control"])
+        self.assertEqual(headers["X-Content-Type-Options"], "nosniff")
+        self.assertIn("sandbox", headers["Content-Security-Policy"])
+        # Uploading leaves the board as it is: the image goes into it as Markdown, with the next save.
+        self.assertEqual(self.raw(), before)
+
+    def test_refuses_what_is_not_an_image_of_the_board(self):
+        files = f"/{self.name}/api/files"
+        cases = [
+            (b"<svg xmlns='http://www.w3.org/2000/svg'><script>alert(1)</script></svg>", {"Content-Type": "image/svg+xml"}, 415),
+            (PNG, {"Content-Type": "application/x-www-form-urlencoded"}, 415),
+            (PNG, {"Content-Type": "text/plain"}, 415),
+            (b"<html><script>alert(1)</script>", {"Content-Type": "image/png"}, 400),
+            (PNG, {"Content-Type": "image/png", "Host": "evil.example"}, 403),
+        ]
+        for body, headers, expected in cases:
+            with self.subTest(headers=headers, body=body[:12]):
+                self.assertEqual(self.request("POST", files, body, headers)[0], expected)
+        self.assertEqual(self.request("POST", "/nope/api/files", PNG, {"Content-Type": "image/png"})[0], 404)
+        self.assertFalse(os.path.exists(os.path.join(self.dir, "kanvas-files")))
+        for path in ("kanvas-files/..%2Fkanvas.json", "kanvas-files/0123456789abcdef.png", "kanvas-files/kanvas.json"):
+            with self.subTest(path=path):
+                self.assertEqual(self.request("GET", f"/{self.name}/{path}")[0], 404)
 
     def other_project(self, folder="other", title="Other"):
         path = os.path.join(self.dir, folder, "kanvas.json")
@@ -2374,6 +2607,13 @@ class ServerTests(TempBoard):
             f.write('{"hello": 1}')
         self.assertEqual(self.open_board(notes)[0], 400)
         self.assertEqual([b["name"] for b in json.loads(self.request("GET", "/api/boards")[2])["boards"]], [self.name])
+
+    def test_opening_json_that_is_not_an_object_is_refused(self):
+        null = os.path.join(self.dir, "null.json")
+        with open(null, "w") as f:
+            f.write("null")
+        status, _, body = self.open_board(null)
+        self.assertEqual((status, json.loads(body)["error"]), (400, f"{null} is not a Kanvas board"))
 
     def test_serve_in_another_project_opens_its_board_in_the_running_kanvas(self):
         other = self.other_project()
@@ -2859,6 +3099,17 @@ class RememberTests(TempBoard):
                 self.assertEqual(server.board_list(), [])
                 self.assertFalse(server.phone_wanted)
                 server.server_close()
+
+    def test_json_that_is_not_an_object_is_not_reopened(self):
+        files = []
+        for text in ("null", "7", "true"):
+            files.append(os.path.join(self.dir, f"{text}.json"))
+            with open(files[-1], "w") as f:
+                f.write(text)
+        os.makedirs(os.path.dirname(self.state))
+        with open(self.state, "w") as f:
+            json.dump({"boards": files + [self.path]}, f)
+        self.assertEqual([b["path"] for b in self.start().board_list()], [self.path])
 
     def test_phone_access_is_remembered(self):
         server = self.start(self.path)

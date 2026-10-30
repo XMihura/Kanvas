@@ -1,7 +1,8 @@
 # Changelog
-
 ## Unreleased
+- Images in descriptions and notes: paste or drop one into the editor, and it is kept next to the board in `kanvas-files/`, named by a hash of its bytes, with ordinary Markdown pointing to it; click an image to see it at full size. Agents attach screenshots with `attach ID IMAGE ... [-m TEXT]`. `export` puts the images inside the snapshot, and `check` warns about images that are missing or that nothing uses. PNG, JPEG, GIF and WebP up to 10 MB; images from the web stay links
 - Close a board from its name menu or with `kanvas close`, keeping its files and forgetting it for the next start. Closing the last board stops Kanvas. Deleted or moved board files are noticed while the server runs, even with no browser open.
+
 ## v0.4.0 — 2026-10-27
 Kanvas runs without Obsidian. The board is a JSON file, agents use a new CLI, and you plan and review in an interactive HTML page.
 
