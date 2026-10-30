@@ -11,6 +11,7 @@ Python 3.8+, standard library only. Run `python kanvas.py -h` for commands.
 """
 
 import argparse
+import base64
 import errno
 import hashlib
 import ipaddress
@@ -57,6 +58,12 @@ REQUIRED_NOTE_KEYS = ("at", "by", "text")
 LOCK_TIMEOUT = 10.0
 STALE_LOCK_AGE = 5.0
 MAX_UPLOAD = 20 * 1024 * 1024
+# Images live next to the board in FILES_DIR, each named by a hash of its bytes, and Markdown refers to them by that
+# relative path. The same image pasted twice is one file, and a file never changes once written.
+FILES_DIR = "kanvas-files"
+MAX_IMAGE = 10 * 1024 * 1024
+IMAGE_TYPES = {"png": "image/png", "jpg": "image/jpeg", "gif": "image/gif", "webp": "image/webp"}
+FILE_REF_RE = re.compile(re.escape(FILES_DIR) + r"/([0-9a-f]{16})\.(png|jpg|gif|webp)\b")
 
 
 class KanvasError(Exception):
@@ -343,6 +350,81 @@ def mutate(path, fn):
 
 def etag_of(data):
     return '"' + hashlib.sha1(data).hexdigest()[:20] + '"'
+
+
+# ---------------------------------------------------------------------------
+# Images
+# ---------------------------------------------------------------------------
+
+
+def image_type(data):
+    """The extension of a PNG, JPEG, GIF or WebP image, from its first bytes; None for anything else.
+    SVG is left out on purpose: it can carry scripts."""
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return "jpg"
+    if data[:6] in (b"GIF87a", b"GIF89a"):
+        return "gif"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "webp"
+    return None
+
+
+def files_dir(board_path):
+    return os.path.join(os.path.dirname(os.path.abspath(board_path)), FILES_DIR)
+
+
+def store_image(board_path, data):
+    """Keeps an image next to the board and returns the path Markdown uses for it, as in kanvas-files/0123abcd.png."""
+    ext = image_type(data)
+    if ext is None:
+        raise KanvasError("Only PNG, JPEG, GIF and WebP images can be attached")
+    if len(data) > MAX_IMAGE:
+        raise KanvasError(f"The image is larger than {MAX_IMAGE // (1024 * 1024)} MB")
+    name = f"{hashlib.sha256(data).hexdigest()[:16]}.{ext}"
+    folder = files_dir(board_path)
+    target = os.path.join(folder, name)
+    if not os.path.isfile(target):
+        os.makedirs(folder, exist_ok=True)
+        tmp = f"{target}.{os.getpid()}-{threading.get_ident()}.tmp"
+        with open(tmp, "wb") as f:
+            f.write(data)
+        os.replace(tmp, target)
+    return f"{FILES_DIR}/{name}"
+
+
+def image_path(board_path, ref):
+    """The file on disk for a path such as kanvas-files/0123abcd.png, or None when the path is not one."""
+    m = FILE_REF_RE.fullmatch(ref)
+    return os.path.join(files_dir(board_path), f"{m.group(1)}.{m.group(2)}") if m else None
+
+
+def image_refs(board):
+    """The images that descriptions and notes refer to, in order of first use."""
+    refs = {}
+    for t in board["tasks"]:
+        for text in [t.get("desc") or ""] + [n.get("text") or "" for n in t.get("notes", [])]:
+            for m in FILE_REF_RE.finditer(str(text)):
+                refs.setdefault(m.group(0), t["id"])
+    return refs
+
+
+def image_problems(board_path, board):
+    """Warnings about images referred to but missing, and images in the folder that nothing refers to."""
+    refs, warnings = image_refs(board), []
+    for ref, tid in refs.items():
+        if not os.path.isfile(image_path(board_path, ref)):
+            warnings.append(f"{tid}: image {ref} is missing")
+    try:
+        names = sorted(os.listdir(files_dir(board_path)))
+    except OSError:
+        names = []
+    for name in names:
+        ref = f"{FILES_DIR}/{name}"
+        if FILE_REF_RE.fullmatch(ref) and ref not in refs:
+            warnings.append(f"{ref} is not used by any task; delete it if you no longer need it")
+    return warnings
 
 
 # ---------------------------------------------------------------------------
@@ -1022,6 +1104,7 @@ def cmd_check(args):
     path = board_path(args)
     board = load_board(path)
     errors, warnings = problems(board)
+    warnings += image_problems(path, board)
     for e in errors:
         print(f"error: {e}")
     for w in warnings:
@@ -1119,6 +1202,42 @@ def cmd_note(args):
     t, waited, requested = mutate(path, op)
     count = len(t["notes"])
     print(f"Added a note to {t['id']} ({count} note{'' if count == 1 else 's'})")
+    if waited and not open_question(t):
+        print(f"{t['id']} no longer waits for the human.")
+    if requested and not change_request(t):
+        print(f"This note answers the human's request for changes on {t['id']}.")
+
+
+def cmd_attach(args):
+    path = board_path(args)
+    text = read_input(args.message, args.stdin, args.file, "note")
+    images = []
+    for name in args.images:
+        try:
+            with open(name, "rb") as f:
+                data = f.read(MAX_IMAGE + 1)
+        except OSError as e:
+            raise KanvasError(f"Cannot read {name}: {e}")
+        try:
+            ref = store_image(path, data)
+        except KanvasError as e:
+            raise KanvasError(f"{name}: {e}")
+        alt = os.path.splitext(os.path.basename(name))[0].replace("[", "(").replace("]", ")")
+        images.append(f"![{alt}]({ref})")
+    note = "\n\n".join(([text] if text else []) + images)
+
+    def op(board):
+        t = find_task(board, args.id)
+        if t["state"] == "done":
+            raise KanvasError(f"{t['id']} is done; propose a follow-up task instead")
+        waited, requested = open_question(t), change_request(t)
+        add_note(t, note, actor(args))
+        return t, waited, requested
+
+    t, waited, requested = mutate(path, op)
+    count = len(images)
+    print(f"Attached {count} image{'' if count == 1 else 's'} to {t['id']} in a note. To show "
+          f"{'it' if count == 1 else 'them'} in a description too, use: {' '.join(images)}")
     if waited and not open_question(t):
         print(f"{t['id']} no longer waits for the human.")
     if requested and not change_request(t):
@@ -1663,9 +1782,20 @@ def cmd_export(args):
     data = json.dumps(canonical(board), ensure_ascii=False).replace("<", "\\u003c")
     data = _LONE_SURROGATE.sub(lambda m: "\\u%04x" % ord(m.group()), data)
     tag = SNAPSHOT_TAG.replace('json">', f'json" data-at="{now_iso()}" data-name="{escape(board_name(path))}">{data}', 1)
+    # The images go inside the snapshot, so it stays one file to share.
+    images = {}
+    for ref in image_refs(board):
+        try:
+            with open(image_path(path, ref), "rb") as f:
+                images[ref] = f"data:{IMAGE_TYPES[ref.rsplit('.', 1)[1]]};base64,{base64.b64encode(f.read()).decode('ascii')}"
+        except OSError:
+            pass
+    if images:
+        tag += f'<script id="kanvas-files" type="application/json">{json.dumps(images)}</script>'
     out = os.path.abspath(args.output)
     write_text_atomic(out, html.replace(SNAPSHOT_TAG, tag, 1))
-    print(f"Wrote {rel(out)}: a read-only snapshot of {len(board['tasks'])} tasks. Open or share it as is.")
+    extra = f" and {len(images)} image{'' if len(images) == 1 else 's'}" if images else ""
+    print(f"Wrote {rel(out)}: a read-only snapshot of {len(board['tasks'])} tasks{extra}. Open or share it as is.")
 
 
 # ---------------------------------------------------------------------------
@@ -2066,8 +2196,9 @@ class BoardHandler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
-        for k, v in (headers or {}).items():
+        headers = dict(headers or {})
+        self.send_header("Cache-Control", headers.pop("Cache-Control", "no-store"))
+        for k, v in headers.items():
             self.send_header(k, v)
         self.end_headers()
         if body:
@@ -2193,7 +2324,46 @@ class BoardHandler(BaseHTTPRequestHandler):
             if self.headers.get("If-None-Match") == tag:
                 return self._send(304, headers={"ETag": tag})
             return self._send(200, data, headers={"ETag": tag})
+        if len(rest) == 2 and rest[0] == FILES_DIR:
+            return self._image(path, f"{FILES_DIR}/{rest[1]}")
         return self._error(404, "Not found")
+
+    def _image(self, board, ref):
+        """An image of the board. Its name is a hash of its bytes, so it never changes and browsers keep it."""
+        target = image_path(board, ref)
+        try:
+            with open(target, "rb") as f:
+                data = f.read()
+        except (OSError, TypeError):
+            return self._error(404, "Not found")
+        self._send(200, data, IMAGE_TYPES[ref.rsplit(".", 1)[1]], headers={
+            "Cache-Control": "private, max-age=31536000, immutable",
+            "X-Content-Type-Options": "nosniff",
+            "Content-Security-Policy": "default-src 'none'; sandbox",
+        })
+
+    def _upload_image(self, board):
+        """Keeps an image sent as the raw request body. An image type is not one a form can send, so the browser asks
+        before another site sends one, and Kanvas does not allow it."""
+        if (self.headers.get("Content-Type") or "").split(";")[0].strip().lower() not in IMAGE_TYPES.values():
+            return self._error(415, "Expected a PNG, JPEG, GIF or WebP image")
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = -1
+        if length <= 0:
+            return self._error(400, "Expected the length of the body in bytes in Content-Length")
+        if length > MAX_IMAGE:
+            return self._error(413, f"Images can be {MAX_IMAGE // (1024 * 1024)} MB at most")
+        self._body_read = True
+        data = self.rfile.read(length)
+        try:
+            ref = store_image(board, data)
+        except KanvasError as e:
+            return self._error(400, str(e))
+        except OSError as e:
+            return self._error(500, f"Cannot save the image: {e}")
+        self._send(200, json.dumps({"path": ref}).encode("utf-8"))
 
     def _phone(self, name):
         """The board's addresses for phones on Tailscale, with a QR code of the first; none while closed to phones.
@@ -2207,6 +2377,8 @@ class BoardHandler(BaseHTTPRequestHandler):
         if not self._host_allowed():
             return self._error(403, "Host not allowed")
         parts = self._route()
+        if parts[1:] == ["api", "files"] and self.server.board_path(parts[0]) is not None:
+            return self._upload_image(self.server.board_path(parts[0]))
         if parts[1:] == ["api", "phone"] and self.server.board_path(parts[0]) is not None:
             if not self._may_manage():
                 return self._error(403, "Only the computer running Kanvas can open it to phones")
@@ -2762,6 +2934,11 @@ def build_parser():
     p.add_argument("id")
     p.add_argument("text", nargs="?")
     text_sources(p, "note")
+    p = add("attach", cmd_attach, "attach images (PNG, JPEG, GIF, WebP) to a task in a note, e.g. screenshots")
+    p.add_argument("id")
+    p.add_argument("images", nargs="+", metavar="IMAGE")
+    p.add_argument("-m", "--message", help="optional text for the note, above the images")
+    text_sources(p, "note text")
     p = add("ask", cmd_ask, "show the human that you wait for their reply to a question in the conversation; "
                             "the next note ends the wait")
     p.add_argument("id")

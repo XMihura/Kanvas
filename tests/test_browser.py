@@ -324,6 +324,30 @@ class BrowserSmokeTests(unittest.TestCase):
                    timeout=5)
         self.assertEqual(self.page.logged(), [])
 
+    def test_a_pasted_image_is_kept_next_to_the_board_and_shows_in_the_note(self):
+        self.load("#BE-03")
+        self.until("the panel of BE-03", "document.querySelector('#panel .cid')?.textContent === 'BE-03'")
+        png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+        self.page.js(f"{NOTE_BOX}.focus(); document.execCommand('insertText', false, 'Before:');")
+        self.page.js(f"""(() => {{
+            const dt = new DataTransfer(), bytes = Uint8Array.from(atob('{png}'), (c) => c.charCodeAt(0));
+            dt.items.add(new File([bytes], 'login form.png', {{ type: 'image/png' }}));
+            {NOTE_BOX}.dispatchEvent(new ClipboardEvent('paste', {{ clipboardData: dt, bubbles: true, cancelable: true }}));
+        }})()""")
+        text = self.until("the image's Markdown in the note box",
+                          f"/^Before:\\n!\\[login form\\]\\(kanvas-files\\/[0-9a-f]{{16}}\\.png\\)$/.test({NOTE_BOX}.value) && {NOTE_BOX}.value")
+        ref = re.search(r"\((.*)\)", text).group(1)
+        self.assertTrue(os.path.isfile(os.path.join(self.dir, "demo", ref)))
+        self.page.js(ADD_NOTE)
+        self.wait_for("the note in kanvas.json", lambda: text in self.notes("BE-03"))
+        img = f"document.querySelector('#panel .md img[src=\"{ref}\"]')"
+        self.until("the image loaded in the panel", f"{img}?.complete && {img}.naturalWidth === 1")
+        self.page.js(f"{img}.click()")
+        self.until("the image at full size", "document.querySelector('dialog.lightbox[open] img')?.naturalWidth === 1")
+        self.page.js("document.querySelector('dialog.lightbox').click()")
+        self.until("the full-size image to close", "!document.querySelector('dialog.lightbox')")
+        self.assertEqual(self.page.logged(), [])
+
     def test_a_failed_save_gives_the_typed_note_back(self):
         self.load("#BE-03")
         self.until("the panel of BE-03", "document.querySelector('#panel .cid')?.textContent === 'BE-03'")
