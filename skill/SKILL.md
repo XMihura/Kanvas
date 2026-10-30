@@ -101,6 +101,7 @@ The human decides from what you write on the board: whether to approve a proposa
 | `finish ID -m SUMMARY` | doing -> review, or done for tasks a YOLO task depends on (the summary is required) |
 | `pause ID [-m NOTE]` | doing -> todo |
 | `note ID TEXT` | Append a note |
+| `attach ID IMAGE [IMAGE ...] [-m TEXT]` | Append a note with images (PNG, JPEG, GIF, WebP), such as screenshots of the result; prints the Markdown to show them in a proposal's description too |
 | `ask ID QUESTION` | Show the human that you wait for their reply in the conversation; the next note ends the wait |
 | `propose GROUP TITLE [DESC] [--deps ID ...]` | New proposal; use `-` as GROUP for none |
 | `add-group NAME [--prefix XX]` | New group |
