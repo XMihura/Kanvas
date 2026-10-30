@@ -2337,6 +2337,13 @@ class ServerTests(TempBoard):
         self.assertEqual(self.open_board(notes)[0], 400)
         self.assertEqual([b["name"] for b in json.loads(self.request("GET", "/api/boards")[2])["boards"]], [self.name])
 
+    def test_opening_json_that_is_not_an_object_is_refused(self):
+        null = os.path.join(self.dir, "null.json")
+        with open(null, "w") as f:
+            f.write("null")
+        status, _, body = self.open_board(null)
+        self.assertEqual((status, json.loads(body)["error"]), (400, f"{null} is not a Kanvas board"))
+
     def test_serve_in_another_project_opens_its_board_in_the_running_kanvas(self):
         other = self.other_project()
         code, out, err = self.run_cli("serve", "--no-open", "--port", str(self.port), cwd=os.path.dirname(other))
@@ -2726,6 +2733,17 @@ class RememberTests(TempBoard):
                 self.assertEqual(server.board_list(), [])
                 self.assertFalse(server.phone_wanted)
                 server.server_close()
+
+    def test_json_that_is_not_an_object_is_not_reopened(self):
+        files = []
+        for text in ("null", "7", "true"):
+            files.append(os.path.join(self.dir, f"{text}.json"))
+            with open(files[-1], "w") as f:
+                f.write(text)
+        os.makedirs(os.path.dirname(self.state))
+        with open(self.state, "w") as f:
+            json.dump({"boards": files + [self.path]}, f)
+        self.assertEqual([b["path"] for b in self.start().board_list()], [self.path])
 
     def test_phone_access_is_remembered(self):
         server = self.start(self.path)

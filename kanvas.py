@@ -199,6 +199,12 @@ def load_board(path):
     return parse_board(read_text_file(path))
 
 
+def is_board_file(path):
+    """Whether the JSON file at `path` holds an object with a task list, as a board always does."""
+    data = json.loads(read_text_file(path))
+    return isinstance(data, dict) and "tasks" in data
+
+
 def _ordered(obj, keys, keep=()):
     out = {}
     for k in keys:
@@ -2004,7 +2010,7 @@ class BoardServer(ThreadingHTTPServer):
         boards = state.get("boards") if isinstance(state, dict) else None
         for path in boards if isinstance(boards, list) else []:
             try:
-                if isinstance(path, str) and "tasks" in json.loads(read_text_file(path)):
+                if isinstance(path, str) and is_board_file(path):
                     load_board(path)
                     self.add_board(path, save=False)
             except (KanvasError, OSError, ValueError):
@@ -2206,7 +2212,7 @@ class BoardHandler(BaseHTTPRequestHandler):
             if not isinstance(path, str) or not os.path.isabs(path):
                 raise KanvasError("Expected the board's absolute path")
             # A board always has its task list, so another JSON file is not taken for one.
-            if "tasks" not in json.loads(read_text_file(path)):
+            if not is_board_file(path):
                 raise KanvasError(f"{path} is not a Kanvas board")
             load_board(path)
         except (KanvasError, ValueError, AttributeError, OSError) as e:
