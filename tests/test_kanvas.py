@@ -45,6 +45,14 @@ def task(tid, state="todo", group=None, deps=(), **extra):
     return t
 
 
+# Hand-edited tasks with a field of the wrong type, and the error each one gives.
+WRONG_TYPES = [
+    (task("G-01", ["todo"]), "Task G-01: 'state' must be a string"),
+    (task("G-01", group=["A"]), "Task G-01: 'group' must be a string or null"),
+    (task("G-01", notes=[{"at": "x", "by": "h", "text": 5}]), "Task G-01: note 'text' must be a string"),
+]
+
+
 def run_html_js(test, code, stdin, sections=()):
     """Runs `code` after the pure part of kanvas.html under Node, with `stdin` parsed as JSON in `input`.
 
@@ -160,6 +168,13 @@ class FormatTests(unittest.TestCase):
     def test_newer_format_is_rejected(self):
         with self.assertRaises(kanvas.KanvasError):
             kanvas.parse_board('{"kanvas": 99, "groups": [], "tasks": []}')
+
+    def test_fields_of_the_wrong_type_are_rejected(self):
+        for bad, message in WRONG_TYPES:
+            with self.subTest(message=message):
+                with self.assertRaises(kanvas.KanvasError) as cm:
+                    kanvas.parse_board(json.dumps(dict(kanvas.new_board(), tasks=[bad])))
+                self.assertEqual(str(cm.exception), message)
 
     def assert_writers_agree(self, text):
         out = run_html_js(self, "process.stdout.write(serialize(normalize(input)));", text)
@@ -1283,6 +1298,16 @@ class WorkflowTests(TempBoard):
         write_board(self.path, board)
         self.assertNotEqual(self.run_cli("check", check=False)[0], 0)
 
+    def test_commands_refuse_fields_of_the_wrong_type(self):
+        for bad, message in WRONG_TYPES:
+            write_board(self.path, dict(kanvas.new_board(), tasks=[bad]))
+            for args in (["status"], ["show", "G-01"], ["check"]):
+                with self.subTest(args=args, message=message):
+                    code, out, err = self.run_cli(*args, check=False)
+                    self.assertEqual(code, 1, out)
+                    self.assertRegex(err, r"\AError: [^\n]+\n\Z")
+                    self.assertIn(message, err)
+
 
 class QuestionTests(TempBoard):
     def test_ask_shows_the_wait_until_the_next_note(self):
@@ -2187,6 +2212,14 @@ class ServerTests(TempBoard):
         self.assertEqual(status, 403)
         status, _, _ = self.request("PUT", self.api, b"{}", {"Host": "evil.example", "Content-Type": "application/json"})
         self.assertEqual(status, 403)
+        self.assertEqual(self.raw(), before)
+
+    def test_rejects_fields_of_the_wrong_type(self):
+        before = self.raw()
+        for bad, message in WRONG_TYPES:
+            with self.subTest(message=message):
+                status, _, body = self.put(dict(kanvas.new_board(), tasks=[bad]), kanvas.etag_of(before))
+                self.assertEqual((status, json.loads(body)["error"]), (400, message))
         self.assertEqual(self.raw(), before)
 
     def test_writes_need_the_version_they_change_and_a_task_list(self):

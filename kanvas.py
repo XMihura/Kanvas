@@ -116,6 +116,10 @@ def parse_board(text):
         t["title"] = _js_text(t.get("title"))
         t["state"] = t["state"] if _js_truthy(t.get("state")) else "todo"
         t["group"] = t["group"] if _js_truthy(t.get("group")) else None
+        if not isinstance(t["state"], str):
+            raise KanvasError(f"Task {t['id']}: 'state' must be a string")
+        if t["group"] is not None and not isinstance(t["group"], str):
+            raise KanvasError(f"Task {t['id']}: 'group' must be a string or null")
         t["desc"] = _js_text(t.get("desc"))
         deps = t.get("deps")
         t["deps"] = [_js_str(d) for d in deps] if isinstance(deps, list) else []
@@ -125,6 +129,8 @@ def parse_board(text):
             t.pop("yolo", None)
         notes = t.get("notes")
         t["notes"] = [n for n in notes if isinstance(n, dict)] if isinstance(notes, list) else []
+        if not all(isinstance(n.get("text", ""), str) for n in t["notes"]):
+            raise KanvasError(f"Task {t['id']}: note 'text' must be a string")
     return board
 
 
