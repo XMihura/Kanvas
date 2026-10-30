@@ -299,9 +299,9 @@ def locked(path):
 def write_text_atomic(path, text):
     path = os.path.realpath(path)  # Replace a link's target, not the link.
     tmp = f"{path}.{os.getpid()}-{threading.get_ident()}.tmp"
-    with open(tmp, "w", encoding="utf-8", newline="\n") as f:
-        f.write(text)
     try:
+        with open(tmp, "w", encoding="utf-8", newline="\n") as f:
+            f.write(text)
         for _ in range(40):
             try:
                 os.replace(tmp, path)
@@ -310,7 +310,7 @@ def write_text_atomic(path, text):
                 # Windows refuses to replace a file another process is reading.
                 time.sleep(0.05)
         os.replace(tmp, path)
-    except OSError:
+    except BaseException:
         if os.path.exists(tmp):
             os.remove(tmp)
         raise
@@ -1629,6 +1629,7 @@ def cmd_export(args):
     if SNAPSHOT_TAG not in html:
         raise KanvasError("kanvas.html has no snapshot slot")
     data = json.dumps(canonical(board), ensure_ascii=False).replace("<", "\\u003c")
+    data = _LONE_SURROGATE.sub(lambda m: "\\u%04x" % ord(m.group()), data)
     tag = SNAPSHOT_TAG.replace('json">', f'json" data-at="{now_iso()}" data-name="{escape(board_name(path))}">{data}', 1)
     out = os.path.abspath(args.output)
     write_text_atomic(out, html.replace(SNAPSHOT_TAG, tag, 1))

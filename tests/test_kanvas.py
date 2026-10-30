@@ -2000,7 +2000,7 @@ class ImportExportTests(TempBoard):
 
     def test_export_snapshot(self):
         board = self.board()
-        board["tasks"].append(task("G-01", desc="</script><script>alert(1)</script>"))
+        board["tasks"].append(task("G-01", title="Café \ud83d", desc="</script><script>alert(1)</script>"))
         write_board(self.path, board)
         self.run_cli("export", "snap.html")
         with open(os.path.join(self.dir, "snap.html"), encoding="utf-8") as f:
@@ -2010,6 +2010,8 @@ class ImportExportTests(TempBoard):
         self.assertEqual(m.group(1), kanvas.board_name(self.path))
         self.assertNotIn("<", m.group(2))
         self.assertEqual(json.loads(m.group(2))["tasks"][0]["desc"], "</script><script>alert(1)</script>")
+        self.assertEqual(json.loads(m.group(2))["tasks"][0]["title"], "Café \ud83d")
+        self.assertIn("Café", m.group(2))
 
     def test_an_untitled_board_goes_by_its_name_in_the_page(self):
         """As on the boards page: the name in its address when served, the one export recorded, else "Kanvas"."""
@@ -2038,6 +2040,20 @@ class ConcurrencyTests(TempBoard):
         self.assertEqual(len(self.get("DV-02")["notes"]), workers * per_worker)
         leftovers = [f for f in os.listdir(self.dir) if f.endswith((".lock", ".tmp"))]
         self.assertEqual(leftovers, [])
+
+    def test_a_failed_write_leaves_no_temp_file(self):
+        """A full disk, or text that cannot be encoded, fails after the temporary file exists."""
+        def full_disk(*args, **kwargs):
+            f = open(*args, **kwargs)
+            f.write = mock.Mock(side_effect=OSError("No space left on device"))
+            return f
+        before = self.raw()
+        with mock.patch.object(kanvas, "open", side_effect=full_disk, create=True), self.assertRaises(OSError):
+            kanvas.write_text_atomic(self.path, "{}")
+        with self.assertRaises(UnicodeEncodeError):
+            kanvas.write_text_atomic(self.path, "Lone \ud83d surrogate")
+        self.assertEqual(self.raw(), before)
+        self.assertEqual([f for f in os.listdir(self.dir) if f.endswith(".tmp")], [])
 
     def test_stale_lock_is_cleared(self):
         lock = self.path + ".lock"
