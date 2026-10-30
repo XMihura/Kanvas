@@ -2169,6 +2169,22 @@ class ImageTests(TempBoard):
         m = re.search(r'<script id="kanvas-files" type="application/json">(.*?)</script>', html, re.S)
         self.assertEqual(json.loads(m.group(1)), {ref: "data:image/png;base64," + base64.b64encode(PNG).decode("ascii")})
 
+    def test_images_attached_through_a_link_sit_next_to_the_real_board(self):
+        link = os.path.join(self.dir, "proj", "kanvas.json")
+        os.mkdir(os.path.dirname(link))
+        try:
+            os.symlink(os.path.join("..", "kanvas.json"), link)
+        except (OSError, NotImplementedError):
+            self.skipTest("this system cannot create symbolic links")
+        self.run_cli("-b", link, "attach", "DV-02", self.write("shot.png", PNG))
+        ref = re.search(r"\((kanvas-files/[^)]+)\)", self.get("DV-02")["notes"][-1]["text"]).group(1)
+        self.assertTrue(os.path.isfile(os.path.join(self.dir, ref)))
+        self.assertFalse(os.path.exists(os.path.join(self.dir, "proj", kanvas.FILES_DIR)))
+        self.assertEqual(kanvas.image_path(link, ref), kanvas.image_path(self.path, ref))
+        # Through the real path, the board finds the image it was given through the link.
+        self.assertNotIn("missing", self.run_cli("check")[1])
+        self.assertIn("and 1 image.", self.run_cli("export", "snap.html")[1])
+
 
 class ConcurrencyTests(TempBoard):
     def test_parallel_agents_do_not_lose_writes(self):

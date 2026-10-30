@@ -372,7 +372,8 @@ def image_type(data):
 
 
 def files_dir(board_path):
-    return os.path.join(os.path.dirname(os.path.abspath(board_path)), FILES_DIR)
+    # Next to the real board, as writes are, so every link to a board shares its images.
+    return os.path.join(os.path.dirname(os.path.realpath(board_path)), FILES_DIR)
 
 
 def store_image(board_path, data):
