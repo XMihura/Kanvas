@@ -141,7 +141,6 @@ Agents may propose tasks and groups, start ready tasks, finish or pause tasks in
 - **Board view.** Kanban columns by state. Drag cards between columns, or approve every proposal at once. Marking the open task done or sending it back opens the next task in the Review column, within the current filters, so you can go through everything waiting for review one task after another; Undo comes back to it. On a phone, one column fills the screen, and a row above the columns gives every state with its count; tap one to go to its column. On a touch screen, hold a card until it lifts, then drag it to a column or to a state in that row; let go without moving to open its menu.
 - **New tasks.** Choose what a new task depends on and what it blocks by searching, or with **Pick on graph**: click cards to add or remove them, then press Done (or Enter), or Cancel (or Escape) to keep the earlier choice. Choices that would create a cycle are dimmed, with the reason on hover.
 - **Task panel.** Title, Markdown description, state, group, dependencies and the notes timeline. Approve or ask for changes, start, send to review, mark done, or send back with feedback.
-- **Images.** Paste or drop an image into a description or a note, and it shows there; click it to see it at full size. Agents attach screenshots with `attach`. See [Images](#images).
 - **Questions from agents.** When an agent needs your answer to go on, it runs `ask` and asks in its chat. Its card turns from Doing to **Waiting for you** and shows the question, a toast announces it, the bell lists it above the work to review, across every open board, and the browser tab's title counts the agents waiting, as in `(1) My project · Kanvas`. You reply in the agent's chat, and the card goes back to Doing with the agent's next note. If that chat is gone, Dismiss in the task panel clears the question.
 - **Right-click menus.** On a card: state actions, a new task that depends on it or blocks it, adding and removing dependencies, copying the ID, deleting. On an arrow (left or right click): the two tasks it connects are highlighted and shown in the menu; click either one to open it, or remove the connection. On empty space: a new task in that group, a new group, or deleting that group (its tasks stay without a group unless you choose to delete them too).
 - **Undo and redo.** Ctrl+Z undoes your last change in the browser, Ctrl+Shift+Z or Ctrl+Y redoes it, and the arrows next to New task do the same. On a Mac, these and the page's other Ctrl shortcuts use ⌘, as the page shows. The toast that confirms a change has an Undo button for that change. Changes agents made in the meantime are kept: an undo only touches what your change touched, and refuses if an agent has changed that since. Inside a text field, Ctrl+Z undoes typing as usual.
@@ -218,7 +217,6 @@ You type `kanvas <command>`; `kanvas -h` lists the commands and `kanvas <command
 | `finish ID -m SUMMARY` | Doing to review, or to done for tasks a YOLO task depends on; the summary is required and kept as a note |
 | `pause ID [-m NOTE]` | Doing back to to do |
 | `note ID TEXT` | Append a note; descriptions stay as the human wrote them |
-| `attach ID IMAGE [IMAGE ...] [-m TEXT]` | Append a note with images, such as screenshots; PNG, JPEG, GIF and WebP up to 10 MB |
 | `ask ID QUESTION` | Show that the agent waits for your reply in its conversation, until its next note |
 | `propose GROUP TITLE [DESC] [--deps ID ...]` | Propose a task |
 | `add-group NAME [--prefix XX]` | Create a group |
@@ -278,15 +276,6 @@ Writes take a short lock and replace the file atomically, so several agents and 
 ```
 
 States are `proposed`, `todo`, `doing`, `review` and `done`; blocked is computed. `"yolo": true` on a task puts it and everything it depends on under YOLO. `"at"` and `"by"` on a task say when it was created and by whom: the agent that proposed it, or `"human"` for tasks made in the browser. A note edited in the browser gets an `"edited"` time next to its original `"at"`. A new task takes the highest number in its group plus one, so when the last task of a group is deleted or rejected, the next new task gets its ID. The CLI and the browser write the same canonical formatting, so diffs show only real changes. Unknown fields are preserved. See [`examples/drone.json`](examples/drone.json) for a complete board.
-
-### Images
-
-Images live next to the board, in a `kanvas-files/` folder, each named by a hash of its bytes, such as `kanvas-files/3f9a1c0b7d2e4a51.png`. Descriptions and notes show them with ordinary Markdown, `![login form](kanvas-files/3f9a1c0b7d2e4a51.png)`, so `kanvas.json` stays small and readable. The same image added twice is one file, and a file never changes once written. Commit `kanvas-files/` with `kanvas.json`.
-
-- PNG, JPEG, GIF and WebP, up to 10 MB each. SVG is refused, since it can carry scripts.
-- Only the board's own images show. Images from the web stay links, so the page still loads nothing from the network.
-- `kanvas serve` shows them, and `kanvas export` puts them inside the snapshot, so it stays one file to share. A `kanvas.html` opened directly cannot reach the folder and shows the images as text.
-- Deleting a note or a description leaves its images in the folder, so undo can bring them back. `kanvas check` lists the images nothing uses any more, and those referred to but missing.
 
 ## Migrating from Kanvas 0.x (Obsidian)
 
