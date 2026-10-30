@@ -5311,6 +5311,8 @@ async function insertImages(ta, files) {
     return;
   }
   const before = ta.value, start = ta.selectionStart, end = ta.selectionEnd, marks = [];
+  // The editor the upload started in: its task, which field, and for a note being edited, which note.
+  const where = { id: ui.selected, label: ta.getAttribute("aria-label"), note: ui.editingNote };
   ta.classList.add("uploading");
   for (const f of files) {
     try {
@@ -5323,14 +5325,33 @@ async function insertImages(ta, files) {
   }
   ta.classList.remove("uploading");
   if (!marks.length) return;
-  // The panel may have drawn the editor again meanwhile; its text then went to the new one.
-  if (!ta.isConnected) ta = document.querySelector(`textarea[aria-label="${ta.getAttribute("aria-label")}"]`) || ta;
-  if (!ta.isConnected) return toast("The editor closed before the image was ready", "error");
+  // The panel may have drawn the editor again meanwhile; its text then went to the new one. Only the same editor of
+  // the same task takes the images: every task's note box has the same label.
+  if (!ta.isConnected) ta = sameEditor(where) || ta;
+  if (!ta.isConnected) {
+    // A new note waits in its task's note box until the task opens again; other editors keep no draft once closed.
+    if (where.id != null && where.label === "New note") {
+      const now = drafts.note.get(where.id) || "";
+      drafts.note.set(where.id, (now && !now.endsWith("\n") ? now + "\n" : now) + marks.join("\n"));
+      return toast(`The images went into the note box of ${where.id}`);
+    }
+    return toast("The editor closed before the image was ready", "error");
+  }
   const [from, to] = ta.value === before ? [start, end] : [ta.selectionStart, ta.selectionEnd];
   const lead = from > 0 && ta.value[from - 1] !== "\n" ? "\n" : "", tail = to < ta.value.length && ta.value[to] !== "\n" ? "\n" : "";
   ta.focus();
   ta.setRangeText(lead + marks.join("\n") + tail, from, to, "end");
   ta.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+// The panel's editor for the place an upload started in, or null when that task or editor is no longer open.
+function sameEditor(where) {
+  if (where.id == null || !same(ui.selected, where.id)) return null;
+  if (where.label === "Edit note") {
+    const e = ui.editingNote, n = where.note;
+    if (!e || !n || !same(e.id, n.id) || !sameNote(e, n) || e.rank !== n.rank) return null;
+  }
+  return [...document.querySelectorAll("#panel textarea")].find((el) => el.getAttribute("aria-label") === where.label) || null;
 }
 
 function showImage(img) {

@@ -348,6 +348,34 @@ class BrowserSmokeTests(unittest.TestCase):
         self.until("the full-size image to close", "!document.querySelector('dialog.lightbox')")
         self.assertEqual(self.page.logged(), [])
 
+    def test_an_image_still_uploading_stays_with_the_task_it_was_pasted_in(self):
+        self.load("#BE-03")
+        self.until("the panel of BE-03", "document.querySelector('#panel .cid')?.textContent === 'BE-03'")
+        png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+        # The upload waits until the test lets it go, after another task has opened.
+        self.page.js("""(() => {
+            const fetch = window.fetch;
+            window.fetch = (url, opts) => String(url).endsWith('api/files')
+                ? new Promise((resolve) => { window.releaseUpload = () => resolve(fetch(url, opts)); }) : fetch(url, opts);
+        })()""")
+        self.page.js(f"""(() => {{
+            const dt = new DataTransfer(), bytes = Uint8Array.from(atob('{png}'), (c) => c.charCodeAt(0));
+            dt.items.add(new File([bytes], 'login form.png', {{ type: 'image/png' }}));
+            {NOTE_BOX}.focus();
+            {NOTE_BOX}.dispatchEvent(new ClipboardEvent('paste', {{ clipboardData: dt, bubbles: true, cancelable: true }}));
+        }})()""")
+        self.until("the upload to start", "typeof window.releaseUpload === 'function'")
+        self.page.js("location.hash = 'FE-04'")
+        self.until("the panel of FE-04", "document.querySelector('#panel .cid')?.textContent === 'FE-04'")
+        self.page.js("window.releaseUpload()")
+        self.until("the upload to finish", "!document.querySelector('textarea.uploading') && "
+                                           "[...document.querySelectorAll('.toast')].some((e) => e.textContent.includes('BE-03'))")
+        self.assertEqual(self.page.js(f"{NOTE_BOX}.value"), "")
+        self.page.js("location.hash = 'BE-03'")
+        self.until("the image in BE-03's note box", "document.querySelector('#panel .cid')?.textContent === 'BE-03' && "
+                                                    f"/^!\\[login form\\]\\(kanvas-files\\/[0-9a-f]{{16}}\\.png\\)$/.test({NOTE_BOX}.value)")
+        self.assertEqual(self.page.logged(), [])
+
     def test_a_failed_save_gives_the_typed_note_back(self):
         self.load("#BE-03")
         self.until("the panel of BE-03", "document.querySelector('#panel .cid')?.textContent === 'BE-03'")

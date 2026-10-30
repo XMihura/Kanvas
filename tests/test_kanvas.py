@@ -2157,6 +2157,22 @@ class ImageTests(TempBoard):
         self.assertIn(f"warning: {unused} is not used by any task", out)
         self.assertNotIn(f"warning: {used}", out)
 
+    def test_images_attached_through_a_link_sit_next_to_the_real_board(self):
+        link = os.path.join(self.dir, "proj", "kanvas.json")
+        os.mkdir(os.path.dirname(link))
+        try:
+            os.symlink(os.path.join("..", "kanvas.json"), link)
+        except (OSError, NotImplementedError):
+            self.skipTest("this system cannot create symbolic links")
+        self.run_cli("-b", link, "attach", "DV-02", self.write("shot.png", PNG))
+        ref = kanvas.store_image(self.path, PNG)
+        self.assertIn(ref, self.get("DV-02")["notes"][-1]["text"])
+        self.assertTrue(os.path.isfile(os.path.join(self.dir, ref)))
+        self.assertFalse(os.path.exists(os.path.join(self.dir, "proj", "kanvas-files")))
+        self.assertEqual(kanvas.image_path(link, ref), kanvas.image_path(self.path, ref))
+        _, out, _ = self.run_cli("-b", link, "check")
+        self.assertNotIn("is missing", out)
+
     def test_export_carries_the_images(self):
         ref = kanvas.store_image(self.path, PNG)
         board = self.board()
