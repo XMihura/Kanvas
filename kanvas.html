@@ -5310,8 +5310,9 @@ async function insertImages(ta, files) {
     toast("Images need the board opened through kanvas serve", "error");
     return;
   }
-  // The Markdown goes only into the editor or note draft of the task the upload started in.
-  const panel = $("#panel"), task = panel.contains(ta) ? ui.selected : null;
+  // The Markdown goes only into the editor or note draft of the task the upload started in, and for a note being
+  // edited, into the editor of that note.
+  const panel = $("#panel"), task = panel.contains(ta) ? ui.selected : null, note = ui.editingNote;
   const label = ta.getAttribute("aria-label"), noteBox = !!ta.closest(".note-form");
   const before = ta.value, start = ta.selectionStart, end = ta.selectionEnd, marks = [];
   ta.classList.add("uploading");
@@ -5327,8 +5328,8 @@ async function insertImages(ta, files) {
   ta.classList.remove("uploading");
   if (!marks.length) return;
   const md = marks.join("\n");
-  // The panel may have drawn the editor again meanwhile for the same task; its text then went to the new one.
-  if (!ta.isConnected && task && same(ui.selected, task)) ta = panel.querySelector(`textarea[aria-label="${label}"]`) || ta;
+  // The panel may have drawn the editor again meanwhile; its text then went to the new one.
+  if (!ta.isConnected) ta = sameEditor(task, label, note) || ta;
   if (ta.isConnected) {
     const [from, to] = ta.value === before ? [start, end] : [ta.selectionStart, ta.selectionEnd];
     ta.focus();
@@ -5340,6 +5341,17 @@ async function insertImages(ta, files) {
     drafts.note.set(task, draft.slice(0, from) + onOwnLines(draft, from, to, md) + draft.slice(to));
     toast(`The image is in your note on ${task}`, "", undefined, () => select(task));
   } else toast("The editor closed before the image was ready", "error");
+}
+
+// The panel's editor called `label` while `task` is open, or null. Every note editor is called "Edit note", so that
+// one counts only while it still edits `note`.
+function sameEditor(task, label, note) {
+  if (task == null || !same(ui.selected, task)) return null;
+  if (label === "Edit note") {
+    const e = ui.editingNote;
+    if (!e || !note || !same(e.id, note.id) || !sameNote(e, note) || e.rank !== note.rank) return null;
+  }
+  return [...$("#panel").querySelectorAll("textarea")].find((el) => el.getAttribute("aria-label") === label) || null;
 }
 
 // `text` to put in place of value[from..to], on lines of its own.
