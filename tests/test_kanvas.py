@@ -524,11 +524,11 @@ class LeaveTests(unittest.TestCase):
 
     def test_unsaved_work(self):
         code = (
-            "let fields = [], pending = 0, store, board = normalize(input), IX = indexOf(board);\n"
+            "let fields = [], pending = 0, uploads = 0, store, board = normalize(input), IX = indexOf(board);\n"
             "globalThis.document = { querySelector: () => null, querySelectorAll: () => fields };\n"
             "const get = (id) => IX.get(key(id)), ui = {}, drafts = { note: new Map(), back: new Map() };\n"
             "const reset = () => {\n"
-            "  fields = []; pending = 0; store = { kind: 'server' };\n"
+            "  fields = []; pending = 0; uploads = 0; store = { kind: 'server' };\n"
             "  Object.assign(ui, { selected: 'A-01', editingDesc: false, editingNote: null });\n"
             "  Object.assign(drafts, { desc: null, noteEdit: null, title: null, boardTitle: null });\n"
             "  drafts.note.clear(); drafts.back.clear();\n"
@@ -536,6 +536,7 @@ class LeaveTests(unittest.TestCase):
             "const cases = {\n"
             "  clean: () => {},\n"
             "  pendingSave: () => { pending = 1; },\n"
+            "  imageUploading: () => { uploads = 1; },\n"
             "  memoryBoard: () => { store = { kind: 'memory', dirty: false }; },\n"
             "  memoryBoardChanged: () => { store = { kind: 'memory', dirty: true }; },\n"
             "  snapshot: () => { store = { kind: 'snapshot', readOnly: true }; drafts.note.set('A-01', 'typed'); },\n"
@@ -557,7 +558,7 @@ class LeaveTests(unittest.TestCase):
         board = {"kanvas": 1, "title": "", "groups": [], "tasks": [task("A-01", desc="Old")]}
         out = json.loads(run_html_js(self, code, json.dumps(board), [("function unsaved(", "async function boot(")]))
         asks = {name for name, value in out.items() if value}
-        self.assertEqual(asks, {"pendingSave", "memoryBoardChanged", "note", "descEditorChanged", "noteEditorChanged", "givenBack", "dialogFilled"})
+        self.assertEqual(asks, {"pendingSave", "imageUploading", "memoryBoardChanged", "note", "descEditorChanged", "noteEditorChanged", "givenBack", "dialogFilled"})
 
 
 class ChecklistTests(unittest.TestCase):
@@ -2157,6 +2158,39 @@ class ImageTests(TempBoard):
         self.assertIn(f"warning: {unused} is not used by any task", out)
         self.assertNotIn(f"warning: {used}", out)
 
+    def test_a_refused_attach_keeps_no_image(self):
+        shot = self.write("shot.png", PNG)
+        self.assertIn("is done", self.fails("attach", "DV-01", shot))
+        self.assertIn("Only PNG, JPEG, GIF and WebP", self.fails("attach", "DV-02", shot, self.write("x.svg", b"<svg/>")))
+        self.assertFalse(os.path.exists(os.path.join(self.dir, "kanvas-files")))
+
+    def test_export_and_check_leave_out_files_that_are_not_the_image_they_are_named_after(self):
+        folder = os.path.join(self.dir, "kanvas-files")
+        os.mkdir(folder)
+        with open(os.path.join(self.dir, "secret.env"), "wb") as f:
+            f.write(PNG + b"TOKEN=secret")
+        ref = "kanvas-files/0123456789abcdef.png"
+        try:
+            os.symlink(os.path.join("..", "secret.env"), os.path.join(self.dir, ref))
+        except (OSError, NotImplementedError):
+            self.skipTest("this system cannot create symbolic links")
+        board = self.board()
+        board["tasks"][1]["desc"] = f"![a]({ref})"
+        write_board(self.path, board)
+        _, out, _ = self.run_cli("export", "snap.html")
+        self.assertNotIn("image", out)
+        with open(os.path.join(self.dir, "snap.html"), encoding="utf-8") as f:
+            self.assertNotIn(base64.b64encode(PNG + b"TOKEN=secret").decode("ascii"), f.read())
+        self.assertIn(f"image {ref} is missing", self.run_cli("check")[1])
+        # Keeping the image whose name a link holds replaces the link, never the file the link points to.
+        real = kanvas.image_path(self.path, kanvas.store_image(self.path, PNG))
+        os.remove(real)
+        os.symlink(os.path.join("..", "secret.env"), real)
+        kanvas.store_image(self.path, PNG)
+        self.assertFalse(os.path.islink(real))
+        with open(os.path.join(self.dir, "secret.env"), "rb") as f:
+            self.assertEqual(f.read(), PNG + b"TOKEN=secret")
+
     def test_images_attached_through_a_link_sit_next_to_the_real_board(self):
         link = os.path.join(self.dir, "proj", "kanvas.json")
         os.mkdir(os.path.dirname(link))
@@ -2420,6 +2454,26 @@ class ServerTests(TempBoard):
         for path in ("kanvas-files/..%2Fkanvas.json", "kanvas-files/0123456789abcdef.png", "kanvas-files/kanvas.json"):
             with self.subTest(path=path):
                 self.assertEqual(self.request("GET", f"/{self.name}/{path}")[0], 404)
+
+    def test_serves_no_file_put_under_an_images_name(self):
+        # A cloned project can hold a link or another file named like an image; neither is read out.
+        folder = os.path.join(self.dir, "kanvas-files")
+        os.mkdir(folder)
+        with open(os.path.join(self.dir, "secret.env"), "wb") as f:
+            f.write(PNG + b"TOKEN=secret")
+        link = os.path.join(folder, "0123456789abcdef.png")
+        try:
+            os.symlink(os.path.join("..", "secret.env"), link)
+        except (OSError, NotImplementedError):
+            self.skipTest("this system cannot create symbolic links")
+        with open(os.path.join(folder, "fedcba9876543210.png"), "wb") as f:
+            f.write(PNG + b"TOKEN=secret")
+        for name in ("0123456789abcdef.png", "fedcba9876543210.png"):
+            with self.subTest(name=name):
+                self.assertEqual(self.request("GET", f"/{self.name}/kanvas-files/{name}")[0], 404)
+        ref = kanvas.store_image(self.path, PNG)
+        status, _, body = self.request("GET", f"/{self.name}/{ref}")
+        self.assertEqual((status, body), (200, PNG))
 
     def other_project(self, folder="other", title="Other"):
         path = os.path.join(self.dir, folder, "kanvas.json")

@@ -365,6 +365,9 @@ class BrowserSmokeTests(unittest.TestCase):
             {NOTE_BOX}.dispatchEvent(new ClipboardEvent('paste', {{ clipboardData: dt, bubbles: true, cancelable: true }}));
         }})()""")
         self.until("the upload to start", "typeof window.releaseUpload === 'function'")
+        # Leaving the page now would lose the image, which is in no editor yet.
+        leave = "(() => { const e = new Event('beforeunload', { cancelable: true }); dispatchEvent(e); return e.defaultPrevented; })()"
+        self.assertTrue(self.page.js(leave))
         self.page.js("location.hash = 'FE-04'")
         self.until("the panel of FE-04", "document.querySelector('#panel .cid')?.textContent === 'FE-04'")
         self.page.js("window.releaseUpload()")
