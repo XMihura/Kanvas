@@ -5310,6 +5310,9 @@ async function insertImages(ta, files) {
     toast("Images need the board opened through kanvas serve", "error");
     return;
   }
+  // The Markdown goes only into the editor or note draft of the task the upload started in.
+  const panel = $("#panel"), task = panel.contains(ta) ? ui.selected : null;
+  const label = ta.getAttribute("aria-label"), noteBox = !!ta.closest(".note-form");
   const before = ta.value, start = ta.selectionStart, end = ta.selectionEnd, marks = [];
   ta.classList.add("uploading");
   for (const f of files) {
@@ -5323,14 +5326,25 @@ async function insertImages(ta, files) {
   }
   ta.classList.remove("uploading");
   if (!marks.length) return;
-  // The panel may have drawn the editor again meanwhile; its text then went to the new one.
-  if (!ta.isConnected) ta = document.querySelector(`textarea[aria-label="${ta.getAttribute("aria-label")}"]`) || ta;
-  if (!ta.isConnected) return toast("The editor closed before the image was ready", "error");
-  const [from, to] = ta.value === before ? [start, end] : [ta.selectionStart, ta.selectionEnd];
-  const lead = from > 0 && ta.value[from - 1] !== "\n" ? "\n" : "", tail = to < ta.value.length && ta.value[to] !== "\n" ? "\n" : "";
-  ta.focus();
-  ta.setRangeText(lead + marks.join("\n") + tail, from, to, "end");
-  ta.dispatchEvent(new Event("input", { bubbles: true }));
+  const md = marks.join("\n");
+  // The panel may have drawn the editor again meanwhile for the same task; its text then went to the new one.
+  if (!ta.isConnected && task && same(ui.selected, task)) ta = panel.querySelector(`textarea[aria-label="${label}"]`) || ta;
+  if (ta.isConnected) {
+    const [from, to] = ta.value === before ? [start, end] : [ta.selectionStart, ta.selectionEnd];
+    ta.focus();
+    ta.setRangeText(onOwnLines(ta.value, from, to, md), from, to, "end");
+    ta.dispatchEvent(new Event("input", { bubbles: true }));
+  } else if (noteBox && task && get(task)) {
+    // Another task is open now. Each task keeps its note draft, so the image waits in that task's draft.
+    const draft = drafts.note.get(task) || "", [from, to] = draft === before ? [start, end] : [draft.length, draft.length];
+    drafts.note.set(task, draft.slice(0, from) + onOwnLines(draft, from, to, md) + draft.slice(to));
+    toast(`The image is in your note on ${task}`, "", undefined, () => select(task));
+  } else toast("The editor closed before the image was ready", "error");
+}
+
+// `text` to put in place of value[from..to], on lines of its own.
+function onOwnLines(value, from, to, text) {
+  return (from > 0 && value[from - 1] !== "\n" ? "\n" : "") + text + (to < value.length && value[to] !== "\n" ? "\n" : "");
 }
 
 function showImage(img) {
