@@ -2062,6 +2062,22 @@ class ConcurrencyTests(TempBoard):
             with self.assertRaisesRegex(kanvas.KanvasError, "Board is busy"):
                 kanvas.mutate(self.path, lambda board: None)
 
+    def test_writes_through_a_link_reach_the_board(self):
+        link = os.path.join(self.dir, "proj", "kanvas.json")
+        os.mkdir(os.path.dirname(link))
+        try:
+            os.symlink(os.path.join("..", "kanvas.json"), link)
+        except (OSError, NotImplementedError):
+            self.skipTest("this system cannot create symbolic links")
+        self.run_cli("-b", link, "note", "DV-02", "through a link")
+        self.assertTrue(os.path.islink(link))
+        self.assertEqual(self.get("DV-02")["notes"][-1]["text"], "through a link")
+        # The lock sits next to the real file, so writers through the link wait for the board's lock.
+        open(self.path + ".lock", "w").close()
+        with mock.patch.object(kanvas, "LOCK_TIMEOUT", 0.2):
+            with self.assertRaisesRegex(kanvas.KanvasError, "Board is busy"):
+                kanvas.mutate(link, lambda board: None)
+
     def test_unwritable_folder_is_reported(self):
         started = time.monotonic()
         with mock.patch.object(kanvas, "LOCK_TIMEOUT", 0.2), mock.patch("os.open", side_effect=PermissionError):

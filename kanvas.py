@@ -263,7 +263,8 @@ def dumps(board):
 @contextmanager
 def locked(path):
     """Cross-process lock so agents, the server and humans never lose writes."""
-    lock = path + ".lock"
+    # Lock the real file, so every link to a board shares its lock.
+    lock = os.path.realpath(path) + ".lock"
     deadline = time.monotonic() + LOCK_TIMEOUT
     while True:
         try:
@@ -296,6 +297,7 @@ def locked(path):
 
 
 def write_text_atomic(path, text):
+    path = os.path.realpath(path)  # Replace a link's target, not the link.
     tmp = f"{path}.{os.getpid()}-{threading.get_ident()}.tmp"
     with open(tmp, "w", encoding="utf-8", newline="\n") as f:
         f.write(text)
