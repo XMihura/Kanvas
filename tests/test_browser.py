@@ -324,6 +324,62 @@ class BrowserSmokeTests(unittest.TestCase):
                    timeout=5)
         self.assertEqual(self.page.logged(), [])
 
+    def open_other_board(self):
+        folder = os.path.join(self.dir, "other")
+        os.mkdir(folder)
+        path = os.path.join(folder, "kanvas.json")
+        shutil.copyfile(self.path, path)
+        base = self.url.rsplit("/demo/", 1)[0] + "/"
+        kanvas.join_running(base, path)
+        return path
+
+    def close_from_menu(self):
+        self.until("the close board menu item", """(() => {
+            const present = () => [...document.querySelectorAll('[role=menuitem]')].some(b => b.textContent === 'Close board');
+            if (!present()) document.querySelector('.board-title').click();
+            return present();
+        })()""")
+        self.page.js("[...document.querySelectorAll('[role=menuitem]')].find(b => b.textContent === 'Close board').click()")
+        self.until("the close dialog", "!!document.querySelector('dialog[open]')")
+        self.page.js("document.querySelector('dialog[open] button[value=ok]').click()")
+
+    def test_close_menu_switches_to_another_board_and_keeps_the_file(self):
+        self.open_other_board()
+        before = read(self.path)
+        self.load()
+        self.close_from_menu()
+        self.until("the other board", "location.pathname === '/other/' && !!document.querySelector('.board-title')")
+        self.assertEqual(read(self.path), before)
+        state = json.loads(read(os.path.join(self.dir, "state", "boards.json")))
+        self.assertEqual(state["boards"], [os.path.join(self.dir, "other", "kanvas.json")])
+        self.assertIsNone(self.server.poll())
+
+    def test_closing_the_last_board_stops_the_server_cleanly(self):
+        before = read(self.path)
+        self.load()
+        self.close_from_menu()
+        self.until("the board closed message", "document.querySelector('#lost').textContent.includes('This board was closed')")
+        self.assertEqual(self.server.wait(timeout=10), 0)
+        self.assertEqual(read(self.path), before)
+        self.assertEqual(json.loads(read(os.path.join(self.dir, "state", "boards.json")))["boards"], [])
+        self.assertEqual(self.page.js("document.querySelector('#sync .label').textContent"), "Board closed")
+
+    def test_a_board_closed_elsewhere_shows_a_link_to_open_boards(self):
+        self.open_other_board()
+        self.load()
+        port = urllib.parse.urlsplit(self.url).port
+        self.cli("close", "--port", str(port))
+        self.until("the closed board banner", "document.querySelector('#lost').textContent.includes('This board was closed')")
+        self.assertEqual(self.page.js("document.querySelector('#lost a').getAttribute('href')"), "/")
+        self.page.js("document.querySelector('#view-board').click()")
+        self.assertEqual(self.page.js("document.querySelector('#sync .label').textContent"), "Board closed")
+        self.assertIsNone(self.server.poll())
+
+    def test_deleting_the_last_board_stops_without_a_browser_poll(self):
+        os.remove(self.path)
+        self.assertEqual(self.server.wait(timeout=10), 0)
+        self.assertEqual(json.loads(read(os.path.join(self.dir, "state", "boards.json")))["boards"], [])
+
     def test_a_failed_save_gives_the_typed_note_back(self):
         self.load("#BE-03")
         self.until("the panel of BE-03", "document.querySelector('#panel .cid')?.textContent === 'BE-03'")

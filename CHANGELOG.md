@@ -1,4 +1,7 @@
 # Changelog
+
+## Unreleased
+- Close a board from its name menu or with `kanvas close`, keeping its files and forgetting it for the next start. Closing the last board stops Kanvas. Deleted or moved board files are noticed while the server runs, even with no browser open.
 ## v0.4.0 — 2026-10-27
 Kanvas runs without Obsidian. The board is a JSON file, agents use a new CLI, and you plan and review in an interactive HTML page.
 

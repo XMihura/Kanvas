@@ -2026,7 +2026,7 @@ function serverStore() {
     catch (e) { throw lostError("Kanvas stopped running or cannot be reached"); }
     finally { clearTimeout(timer); }
   };
-  const answered = (r) => (r.status === 404 ? lostError("this board is no longer open in Kanvas") : new Error(`server answered ${r.status}`));
+  const answered = (r) => (r.status === 404 ? Object.assign(lostError("this board was closed in Kanvas"), { closed: true }) : new Error(`server answered ${r.status}`));
   return {
     kind: "server",
     async load() {
@@ -2148,6 +2148,7 @@ async function open(s) {
 async function commit(fn, { record = true, onFail = null } = {}) {
   if (!store || store.readOnly) { toast("This snapshot is read-only"); return false; }
   // Refused at once, so nothing looks saved and then vanishes; the banner says how to bring Kanvas back.
+  if (closingBoard) return false;
   if (lost) { toast(`Not saved: ${lost}`, "error"); if (onFail) onFail(new Error(lost)); return false; }
   let draft;
   const before = clone(board);
@@ -2168,7 +2169,7 @@ async function commit(fn, { record = true, onFail = null } = {}) {
       toast(`Not saved: ${e.message}`, "error");
       if (entry) forget(entry);
       if (onFail) onFail(e);
-      try { confirmed = await store.load(); } catch (err) { setSync("bad", err.message, err.lost); }
+      try { confirmed = await store.load(); } catch (err) { setSync("bad", err.message, err.lost, err.closed); }
     } finally {
       pending--;
       if (!pending) { setBoard(clone(confirmed)); render(); }
@@ -2182,11 +2183,11 @@ async function poll() {
     const seen = writes;
     try {
       const fresh = await store.poll();
-      if (store.kind !== "memory" && store.kind !== "snapshot") setSync("ok");
+      if (seen === writes && !closingBoard && store.kind !== "memory" && store.kind !== "snapshot") setSync("ok");
       // A board read while a save ran may not match the version that save left: drop it and read again next time.
       if (fresh && !pending && writes === seen) { fresh.accept(); applyRemote(fresh.board); }
     } catch (e) {
-      setSync("bad", e.message, e.lost);
+      setSync("bad", e.message, e.lost, e.closed);
     }
   }
   setTimeout(poll, POLL_MS);
@@ -2372,12 +2373,15 @@ function renderUndo() {
 }
 
 // `unreachable` marks a "bad" status where the page cannot reach the board at all, which shows the banner.
-function setSync(status, detail, unreachable = false) {
+function setSync(status, detail, unreachable = false, closed = false) {
+  if (status === "ok") closedBoard = false;
+  else if (closed) closedBoard = true;
+  if (closedBoard) { detail = "this board was closed in Kanvas"; unreachable = true; }
   const el = $("#sync");
   let label = "", cls = status;
   if (!store) return;
   setLost(store.kind === "server" && status === "bad" && unreachable ? detail : null);
-  if (store.kind === "server") label = status === "ok" ? "Live" : "Disconnected";
+  if (store.kind === "server") label = closedBoard ? "Board closed" : status === "ok" ? "Live" : "Disconnected";
   else if (store.kind === "file") label = status === "ok" ? store.name : "File unavailable";
   else if (store.kind === "memory") { label = store.dirty ? "Unsaved" : "Not synced"; cls = "warn"; }
   else if (store.kind === "snapshot") { label = "Read-only snapshot"; cls = ""; }
@@ -2401,8 +2405,9 @@ function setLost(why) {
   lost = why;
   if (el.dataset.why === (why || "")) return;
   el.dataset.why = why || "";
-  if (why) el.replaceChildren(h("span", {}, h("strong", {}, `${why[0].toUpperCase()}${why.slice(1)}.`), " ", serveHint("Run "),
-    " Until then nothing can be saved, and this page reconnects by itself."));
+  if (why) el.replaceChildren(h("span", {}, h("strong", {}, `${why[0].toUpperCase()}${why.slice(1)}.`), " ",
+    closedBoard ? [h("a", { href: "/" }, "Open boards"), ". Kanvas stops when the last board closes. "] : null,
+    serveHint("Run "), " Until then nothing can be saved, and this page reconnects by itself."));
   el.hidden = !why;
 }
 
@@ -4633,6 +4638,7 @@ function dropdown(btn, items, { alignRight = false, cls = "", gap = 6, role = "m
 
 // One Kanvas serves every open board at an address of its own, /<name>/, so each can also have a tab.
 let openBoards = [];
+let canManageBoards = false, closedBoard = false, closingBoard = false;
 const boardHere = () => decodeURIComponent(location.pathname.split("/")[1] || "");
 const boardUrl = (b) => `/${encodeURIComponent(b.name)}/`;
 // A board without a title goes by the name in its address, as on the page that lists the boards. A file opened in
@@ -4643,7 +4649,15 @@ async function refreshBoards() {
   if (store?.kind !== "server") return;
   try {
     const r = await fetch("/api/boards", { cache: "no-store" });
-    if (r.ok) openBoards = (await r.json()).boards || [];
+    if (r.ok) {
+      const info = await r.json();
+      openBoards = info.boards || [];
+      canManageBoards = !!info.manage;
+      const names = new Set(openBoards.map((b) => b.name));
+      for (const name of others.keys()) if (!names.has(name)) others.delete(name);
+      if (!names.has(boardHere())) setSync("bad", "this board was closed in Kanvas", true, true);
+      renderInboxButton();
+    }
   } catch (e) { /* the sync status already shows a lost connection */ }
 }
 
@@ -4708,7 +4722,7 @@ function waitingIn(b) {
 function inboxBoards() {
   if (!board) return [];
   const here = { name: boardHere(), title: boardLabel(), board, here: true };
-  return [here, ...openBoards.filter((b) => b.name !== here.name && others.has(b.name)).map((b) => ({ name: b.name, ...others.get(b.name) }))];
+  return [...(closedBoard ? [] : [here]), ...openBoards.filter((b) => b.name !== here.name && others.has(b.name)).map((b) => ({ name: b.name, ...others.get(b.name) }))];
 }
 
 // The inbox keeps nothing of its own: it reads the boards, so every browser and device shows the same.
@@ -4767,6 +4781,33 @@ async function switchBoard(step) {
   goToBoard(openBoards[(i + step + n) % n]);
 }
 
+async function closeBoard() {
+  const accepted = await modal(`Close ${boardLabel()}?`, [
+    h("p", {}, "Its board file stays in your project. Closing the last board stops Kanvas."),
+    h("p", {}, "Run kanvas serve in the project to open the board again."),
+    unsaved() ? h("p", {}, "Unsaved text in this tab will not be saved.") : null,
+  ], { ok: "Close board" });
+  if (!accepted || closingBoard) return;
+  closingBoard = true;
+  try {
+    await saveQueue;
+    const r = await fetch(`/api/boards/${encodeURIComponent(boardHere())}`, {
+      method: "DELETE", headers: { "Content-Type": "application/json" }, body: "{}",
+    });
+    const info = await r.json();
+    if (!r.ok) throw new Error(info.error || `server answered ${r.status}`);
+    writes++; // Ignore polls that began before this board closed.
+    openBoards = info.boards || [];
+    if (openBoards.length) location.assign(boardUrl(openBoards[0]));
+    else {
+      others.clear();
+      setSync("bad", "this board was closed in Kanvas", true, true);
+      renderInboxButton();
+    }
+  } catch (e) { toast(`Could not close the board: ${e.message}`, "error"); }
+  finally { closingBoard = false; }
+}
+
 function boardMenu() {
   const keys = (k) => h("kbd", {}, k);
   const boards = store.kind === "server" && openBoards.length > 1 ? openBoards : [];
@@ -4779,6 +4820,7 @@ function boardMenu() {
     store.readOnly ? null : { label: "Rename board", icon: "edit", run: () => { ui.editingTitle = true; renderHeader(); } },
     store.readOnly ? null : { label: "Groups…", icon: "lanes", run: groupsDialog },
     store.kind === "server" ? { label: "Open on your phone…", icon: "phone", run: phoneDialog } : null,
+    store.kind === "server" && canManageBoards && !closedBoard ? { label: "Close board", icon: "x", run: closeBoard } : null,
     phone.matches ? null : "sep",
     phone.matches ? null : { label: ["Keyboard shortcuts", keys("?")], icon: "keyboard", run: helpDialog },
   ];

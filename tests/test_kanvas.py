@@ -352,7 +352,7 @@ class FailedSaveTests(unittest.TestCase):
 
     def run_commits(self, code, board):
         setup = (
-            "let board, confirmed, store, lost = null, pending = 0, writes = 0, saveQueue = Promise.resolve();\n"
+            "let board, confirmed, store, lost = null, closingBoard = false, pending = 0, writes = 0, saveQueue = Promise.resolve();\n"
             "const log = [], failed = [];\n"
             "toast = (msg) => log.push(msg);\n"
             "const setBoard = (b) => { board = b; }, render = () => {}, remember = () => ({}), forget = () => {}, setSync = () => {};\n"
@@ -428,7 +428,7 @@ class LostConnectionTests(unittest.TestCase):
         )
         out = json.loads(run_html_js(self, code, "{}", [("function serverStore()", "function fileStore(")]))
         down = ["Kanvas stopped running or cannot be reached", True]
-        closed = ["this board is no longer open in Kanvas", True]
+        closed = ["this board was closed in Kanvas", True]
         self.assertEqual(out, {
             "down load": down, "down poll": down, "down save": down,
             # Only reads give up on a request that hangs: a write may have landed, and waits for its answer.
@@ -994,7 +994,7 @@ class ReviewFlowTests(unittest.TestCase):
             {"id": "BE-03", "during": {"editingDesc": True}},
         ]
         code = self.STATE + (
-            "let confirmed, store, lost = null, pending = 0, writes = 0, saveQueue = Promise.resolve();\n"
+            "let confirmed, store, lost = null, closingBoard = false, pending = 0, writes = 0, saveQueue = Promise.resolve();\n"
             "const edits = { undo: [], redo: [] }, toasts = [];\n"
             "const setBoard = (b) => { board = b; IX = indexOf(b); }, render = () => {}, setSync = () => {};\n"
             "const remember = (before, after) => { const e = { before, after }; edits.undo.push(e); return e; };\n"
@@ -2097,6 +2097,84 @@ class ServerTests(TempBoard):
             headers["If-Match"] = etag
         return self.request("PUT", self.api, json.dumps(board).encode("utf-8"), headers)
 
+    def close_board(self, name=None, headers=None):
+        return self.request("DELETE", "/api/boards/" + (name or self.name), b"{}",
+                            headers if headers is not None else {"Content-Type": "application/json"})
+
+    def test_close_forgets_the_board_and_keeps_its_file(self):
+        self.server.remember = os.path.join(self.dir, "state", "boards.json")
+        other = self.other_project()
+        self.server.add_board(other)
+        before = self.raw()
+        status, _, body = self.close_board()
+        self.assertEqual(status, 200)
+        info = json.loads(body)
+        self.assertFalse(info["stopping"])
+        self.assertEqual([b["path"] for b in info["boards"]], [other])
+        self.assertEqual(self.raw(), before)
+        self.assertEqual(json.loads(kanvas.read_text_file(self.server.remember))["boards"], [other])
+        self.assertEqual(self.request("GET", self.api)[0], 404)
+        self.assertEqual(self.request("PUT", self.api, b"{}", {"Content-Type": "application/json"})[0], 404)
+        self.assertEqual(self.close_board()[0], 404)
+        self.assertEqual(self.request("GET", "/other/api/board")[0], 200)
+        self.assertTrue(json.loads(self.request("GET", "/api/boards")[2])["manage"])
+
+    def test_close_requires_this_computer_and_json(self):
+        for headers, expected in (({}, 415), ({"Content-Type": "text/plain"}, 415),
+                                  ({"Content-Type": "application/json", "Host": "evil.example"}, 403),
+                                  ({"Content-Type": "application/json", "X-Forwarded-For": "100.64.0.8"}, 403)):
+            with self.subTest(headers=headers):
+                self.assertEqual(self.close_board(headers=headers)[0], expected)
+                self.assertEqual(self.server.board_path(self.name), self.path)
+        self.server.opens_boards = False
+        try:
+            self.assertEqual(self.close_board()[0], 403)
+            self.assertFalse(json.loads(self.request("GET", "/api/boards")[2])["manage"])
+        finally:
+            self.server.opens_boards = True
+
+    def test_close_cli_finds_the_board_and_reports_when_it_is_not_open(self):
+        self.server.add_board(self.other_project())
+        _, out, _ = self.run_cli("close", "--port", str(self.port))
+        self.assertIn("Closed " + self.name, out)
+        self.assertIn("file was kept", out)
+        self.assertIsNone(self.server.board_path(self.name))
+        _, out, _ = self.run_cli("close", "--port", str(self.port))
+        self.assertIn("is not open", out)
+        self.assertNotIn("Closed ", out)
+
+    def test_close_cli_last_board_reports_shutdown(self):
+        _, out, _ = self.run_cli("close", "--port", str(self.port))
+        self.assertIn("last board. Kanvas is stopping", out)
+        self.assertEqual(self.server.board_list(), [])
+        self.assertIsNotNone(self.server.stop_at)
+
+    def test_close_cli_with_no_server_is_harmless(self):
+        before = self.raw()
+        with mock.patch.object(kanvas, "find_running", return_value=None), \
+                mock.patch.object(sys, "stdout", io.StringIO()) as out:
+            self.assertEqual(kanvas.main(["-b", self.path, "close"]), 0)
+        self.assertIn("not running", out.getvalue())
+        self.assertEqual(self.raw(), before)
+
+    def test_close_cli_accepts_an_explicit_missing_board(self):
+        other = self.other_project()
+        self.server.add_board(other)
+        os.remove(other)
+        _, out, _ = self.run_cli("-b", other, "close", "--port", str(self.port))
+        self.assertIn("Closed other", out)
+        self.assertEqual(self.server.board_path(self.name), self.path)
+
+    def test_missing_boards_are_removed_without_a_browser_poll(self):
+        other = self.other_project()
+        self.server.add_board(other)
+        os.remove(other)
+        deadline = time.monotonic() + 6
+        while self.server.board_path("other") is not None and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertIsNone(self.server.board_path("other"))
+        self.assertEqual(self.request("GET", self.api)[0], 200)
+
     def test_starting_skips_the_host_name_lookup(self):
         """socket.getfqdn, which HTTPServer calls on start, can take half a minute on macOS."""
         with mock.patch("socket.getfqdn", side_effect=AssertionError("getfqdn was called")):
@@ -2629,6 +2707,48 @@ class RememberTests(TempBoard):
     def remembered(self):
         with open(self.state, encoding="utf-8") as f:
             return json.load(f)
+
+    def test_closing_the_last_board_is_remembered_and_reopening_cancels_shutdown(self):
+        server = self.start(self.path)
+        name = kanvas.board_name(self.path)
+        self.assertTrue(server.remove_board(name))
+        self.assertEqual(self.remembered()["boards"], [])
+        self.assertIsNotNone(server.stop_at)
+        self.assertTrue(os.path.isfile(self.path))
+        self.assertEqual(self.start().board_list(), [])
+        server.add_board(self.path)
+        self.assertIsNone(server.stop_at)
+        self.assertEqual(self.remembered()["boards"], [self.path])
+
+    def test_missing_files_need_to_stay_missing_and_bad_json_stays_open(self):
+        server = self.start(self.path)
+        other = self.other("other")
+        server.add_board(other)
+        name = kanvas.board_name(self.path)
+        moved = self.path + ".moved"
+        os.rename(self.path, moved)
+        with mock.patch.object(kanvas.time, "monotonic", return_value=10):
+            server.service_actions()
+        self.assertEqual(server.board_path(name), self.path)
+        os.rename(moved, self.path)
+        with mock.patch.object(kanvas.time, "monotonic", return_value=20):
+            server.service_actions()
+        self.assertNotIn(name, server.missing_boards)
+        with open(self.path, "w") as f:
+            f.write("not JSON")
+        server.service_actions()
+        self.assertEqual(server.board_path(name), self.path)
+        with mock.patch.object(kanvas.os, "stat", side_effect=PermissionError):
+            server.service_actions()
+        self.assertEqual(server.board_path(name), self.path)
+        os.remove(self.path)
+        with mock.patch.object(kanvas.time, "monotonic", return_value=30):
+            server.service_actions()
+        with mock.patch.object(kanvas.time, "monotonic", return_value=33):
+            server.service_actions()
+        self.assertIsNone(server.board_path(name))
+        self.assertEqual(self.remembered()["boards"], [other])
+        self.assertIsNone(server.stop_at)
 
     def test_open_boards_come_back_after_a_restart(self):
         first = self.start(self.path)

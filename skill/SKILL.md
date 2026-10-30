@@ -101,6 +101,7 @@ The human decides from what you write on the board: whether to approve a proposa
 | `finish ID -m SUMMARY` | doing -> review, or done for tasks a YOLO task depends on (the summary is required) |
 | `pause ID [-m NOTE]` | doing -> todo |
 | `note ID TEXT` | Append a note |
+| `close [--port N]` | When the human asks, close this project’s board without deleting it (`-b PATH` selects another); closing the last board stops the server |
 | `ask ID QUESTION` | Show the human that you wait for their reply in the conversation; the next note ends the wait |
 | `propose GROUP TITLE [DESC] [--deps ID ...]` | New proposal; use `-` as GROUP for none |
 | `add-group NAME [--prefix XX]` | New group |

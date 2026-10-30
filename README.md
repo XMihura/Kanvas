@@ -73,7 +73,7 @@ Agents that support skills pick the skill up automatically, and `init` creates a
 Plan and track work on the Kanvas board; follow .agents/skills/kanvas/SKILL.md.
 ```
 
-`serve` opens the board in your browser. Keep it running while you work; Ctrl+C stops it. Run `kanvas serve` in your other projects too: their boards open in the same Kanvas, each at its own address such as `http://127.0.0.1:8765/my-project/`, and the terminal is free again right away. Switch boards from the menu on the board's name, or with Shift+← and Shift+→, or keep each in a tab of its own.
+`serve` opens the board in your browser. Keep it running while you work; Ctrl+C stops it. Run `kanvas serve` in your other projects too: their boards open in the same Kanvas, each at its own address such as `http://127.0.0.1:8765/my-project/`, and the terminal is free again right away. Switch boards from the menu on the board's name, or with Shift+← and Shift+→, or keep each in a tab of its own. Choose **Close board** in that menu, or run `kanvas close` in the project, to close it without deleting its files. Closing the last board stops Kanvas; `kanvas serve` opens it again.
 
 **4. Ask your agent:**
 
@@ -227,6 +227,7 @@ You type `kanvas <command>`; `kanvas -h` lists the commands and `kanvas <command
 | `undepend ID ON [ON ...]` | Remove dependencies from a proposal |
 | `check` | Validate the board; exit code 1 on errors |
 | `serve [--port N] [--host H] [--tailscale]` | Open the board in the browser; when Kanvas already runs for another project, open the board there and return. In a project without a board, offer to create one first. `--tailscale` also opens the boards to your phone over Tailscale |
+| `close [--port N]` | Close the current project’s board (or `-b PATH`) without deleting its file; closing the last board stops Kanvas |
 | `serve --saved` | Serve only the boards open last time, without a project of its own; what `service` runs |
 | `service install [--tailscale]` / `uninstall` / `status` | Start Kanvas when you log in, so your boards are always open; `--tailscale` also opens them to your phone |
 | `init [DIR]` | Set up Kanvas in a project, or refresh the agents' copy after an update |
@@ -237,7 +238,7 @@ You type `kanvas <command>`; `kanvas -h` lists the commands and `kanvas <command
 
 In a project without a board, `serve` asks whether to create one, then opens it. Without a person at the terminal, it fails with a message naming `kanvas init`.
 
-One Kanvas serves the boards of all your projects. The first `serve` starts it and keeps running; a `serve` in another project finds it, opens its board there and returns. Each board's address is named after its project folder, and `http://127.0.0.1:8765/` lists the open boards. Kanvas remembers that list, and whether it was open to phones, in `boards.json` in your user folder (`~/.local/state/kanvas/` on Linux, `~/Library/Application Support/Kanvas/` on macOS, `%LOCALAPPDATA%\Kanvas\` on Windows), so the next start reopens them. A board whose file is gone is dropped from the list.
+One Kanvas serves the boards of all your projects. The first `serve` starts it and keeps running; a `serve` in another project finds it, opens its board there and returns. Each board's address is named after its project folder, and `http://127.0.0.1:8765/` lists the open boards. Kanvas remembers that list, and whether it was open to phones, in `boards.json` in your user folder (`~/.local/state/kanvas/` on Linux, `~/Library/Application Support/Kanvas/` on macOS, `%LOCALAPPDATA%\Kanvas\` on Windows), so the next start reopens them. Closed boards are removed from the remembered list. While Kanvas runs, a board whose file is deleted or moved is removed within a few seconds, even without a browser open. A brief gap while an editor replaces the file, unreadable files and invalid JSON do not close a board. Closing or removing the last board stops the server after a short delay so open tabs can show that it closed. Board closing is available only on the computer running Kanvas. A login service does not restart this clean shutdown; run `kanvas serve` to open a board again.
 
 Text arguments also accept `--stdin` and `--file PATH`, read as UTF-8 on every platform, which is the reliable way to pass multi-line or non-ASCII text from any shell. Notes and proposals are signed with `--as NAME` or the `KANVAS_AGENT` environment variable. The CLI finds `kanvas.json` in the current directory or any parent; `--board PATH` or `KANVAS_BOARD` point elsewhere.
 
