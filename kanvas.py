@@ -21,6 +21,7 @@ import re
 import shutil
 import socket
 import socketserver
+import stat
 import subprocess
 import sys
 import threading
@@ -376,17 +377,23 @@ def files_dir(board_path):
     return os.path.join(os.path.dirname(os.path.realpath(board_path)), FILES_DIR)
 
 
-def store_image(board_path, data):
-    """Keeps an image next to the board and returns the path Markdown uses for it, as in kanvas-files/0123abcd.png."""
+def image_name(data):
+    """The name an image is kept under, such as 0123abcd.png; refuses what is not an image Kanvas accepts."""
     ext = image_type(data)
     if ext is None:
         raise KanvasError("Only PNG, JPEG, GIF and WebP images can be attached")
     if len(data) > MAX_IMAGE:
         raise KanvasError(f"The image is larger than {MAX_IMAGE // (1024 * 1024)} MB")
-    name = f"{hashlib.sha256(data).hexdigest()[:16]}.{ext}"
+    return f"{hashlib.sha256(data).hexdigest()[:16]}.{ext}"
+
+
+def store_image(board_path, data):
+    """Keeps an image next to the board and returns the path Markdown uses for it, as in kanvas-files/0123abcd.png."""
+    name = image_name(data)
     folder = files_dir(board_path)
     target = os.path.join(folder, name)
-    if not os.path.isfile(target):
+    # A link or other file under the image's name is replaced by the image itself.
+    if read_image(board_path, f"{FILES_DIR}/{name}") is None:
         os.makedirs(folder, exist_ok=True)
         tmp = f"{target}.{os.getpid()}-{threading.get_ident()}.tmp"
         with open(tmp, "wb") as f:
@@ -399,6 +406,22 @@ def image_path(board_path, ref):
     """The file on disk for a path such as kanvas-files/0123abcd.png, or None when the path is not one."""
     m = FILE_REF_RE.fullmatch(ref)
     return os.path.join(files_dir(board_path), f"{m.group(1)}.{m.group(2)}") if m else None
+
+
+def read_image(board_path, ref):
+    """The bytes of a board's image, or None. Only a regular file whose bytes match its name counts: a link or other
+    file put in kanvas-files/ under an image's name, as a cloned project could, is never read out."""
+    target = image_path(board_path, ref)
+    if target is None:
+        return None
+    try:
+        if not stat.S_ISREG(os.lstat(target).st_mode):
+            return None
+        with open(target, "rb") as f:
+            data = f.read(MAX_IMAGE + 1)
+        return data if image_name(data) == os.path.basename(target) else None
+    except (OSError, KanvasError):
+        return None
 
 
 def image_refs(board):
@@ -415,8 +438,8 @@ def image_problems(board_path, board):
     """Warnings about images referred to but missing, and images in the folder that nothing refers to."""
     refs, warnings = image_refs(board), []
     for ref, tid in refs.items():
-        if not os.path.isfile(image_path(board_path, ref)):
-            warnings.append(f"{tid}: image {ref} is missing")
+        if read_image(board_path, ref) is None:
+            warnings.append(f"{tid}: image {ref} is missing, or is not the image its name says")
     try:
         names = sorted(os.listdir(files_dir(board_path)))
     except OSError:
@@ -1212,7 +1235,7 @@ def cmd_note(args):
 def cmd_attach(args):
     path = board_path(args)
     text = read_input(args.message, args.stdin, args.file, "note")
-    images = []
+    files, images = [], []
     for name in args.images:
         try:
             with open(name, "rb") as f:
@@ -1220,9 +1243,10 @@ def cmd_attach(args):
         except OSError as e:
             raise KanvasError(f"Cannot read {name}: {e}")
         try:
-            ref = store_image(path, data)
+            ref = f"{FILES_DIR}/{image_name(data)}"
         except KanvasError as e:
             raise KanvasError(f"{name}: {e}")
+        files.append(data)
         alt = os.path.splitext(os.path.basename(name))[0].replace("[", "(").replace("]", ")")
         images.append(f"![{alt}]({ref})")
     note = "\n\n".join(([text] if text else []) + images)
@@ -1231,6 +1255,9 @@ def cmd_attach(args):
         t = find_task(board, args.id)
         if t["state"] == "done":
             raise KanvasError(f"{t['id']} is done; propose a follow-up task instead")
+        # The images are kept only once the note can go in, so a refused command leaves no file behind.
+        for data in files:
+            store_image(path, data)
         waited, requested = open_question(t), change_request(t)
         add_note(t, note, actor(args))
         return t, waited, requested
@@ -1786,11 +1813,9 @@ def cmd_export(args):
     # The images go inside the snapshot, so it stays one file to share.
     images = {}
     for ref in image_refs(board):
-        try:
-            with open(image_path(path, ref), "rb") as f:
-                images[ref] = f"data:{IMAGE_TYPES[ref.rsplit('.', 1)[1]]};base64,{base64.b64encode(f.read()).decode('ascii')}"
-        except OSError:
-            pass
+        data = read_image(path, ref)
+        if data is not None:
+            images[ref] = f"data:{IMAGE_TYPES[ref.rsplit('.', 1)[1]]};base64,{base64.b64encode(data).decode('ascii')}"
     if images:
         tag += f'<script id="kanvas-files" type="application/json">{json.dumps(images)}</script>'
     out = os.path.abspath(args.output)
@@ -2404,11 +2429,8 @@ class BoardHandler(BaseHTTPRequestHandler):
 
     def _image(self, board, ref):
         """An image of the board. Its name is a hash of its bytes, so it never changes and browsers keep it."""
-        target = image_path(board, ref)
-        try:
-            with open(target, "rb") as f:
-                data = f.read()
-        except (OSError, TypeError):
+        data = read_image(board, ref)
+        if data is None:
             return self._error(404, "Not found")
         self._send(200, data, IMAGE_TYPES[ref.rsplit(".", 1)[1]], headers={
             "Cache-Control": "private, max-age=31536000, immutable",

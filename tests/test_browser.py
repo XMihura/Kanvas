@@ -198,6 +198,9 @@ NOTE_BOX = "document.querySelector('#panel .note-form textarea')"
 DESC_BOX = "document.querySelector('#panel textarea[aria-label=\"Description\"]')"
 EDIT_DESC = ("[...document.querySelectorAll('#panel button')]"
              ".find((b) => b.title.startsWith('Edit the description') || b.textContent.includes('Add a description')).click()")
+NOTE_EDITOR = "document.querySelector('#panel textarea[aria-label=\"Edit note\"]')"
+CLOSE_NOTE_EDITOR = f"{NOTE_EDITOR}.dispatchEvent(new KeyboardEvent('keydown', {{ key: 'Escape', bubbles: true }}))"
+TOASTS = "document.querySelector('#toasts').innerText"
 ADD_NOTE = "[...document.querySelectorAll('#panel .note-form button')].find((b) => b.textContent.includes('Add note')).click()"
 PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
 
@@ -310,6 +313,26 @@ class BrowserSmokeTests(unittest.TestCase):
     def open_task(self, tid):
         self.page.js(f"location.hash = {json.dumps(tid)}")
         self.until(f"the panel of {tid}", f"document.querySelector('#panel .cid')?.textContent === {json.dumps(tid)}")
+
+    def edit_note(self, i):
+        """Opens the editor of the open task's `i`-th note on screen, and returns its text."""
+        self.page.js(f"[...document.querySelectorAll('#panel button.note-btn')][{i}].click()")
+        return self.until(f"the editor of note {i}", f"{NOTE_EDITOR}?.value")
+
+    def hold_uploads(self):
+        """From now on, image uploads wait until let_upload_through()."""
+        self.held = []
+        self.page.on("Fetch.requestPaused", lambda p: self.held.append(p["requestId"]))
+        self.page.send("Fetch.enable", patterns=[{"urlPattern": "*/api/files"}])
+
+    def wait_for_upload(self):
+        def held():
+            self.page.logged()  # takes in the events that arrived meanwhile
+            return self.held
+        self.wait_for("the upload to start", held)
+
+    def let_upload_through(self):
+        self.page.post("Fetch.continueRequest", requestId=self.held.pop())
 
     def notes(self, tid):
         return [n["text"] for n in kanvas.find_task(kanvas.load_board(self.path), tid)["notes"]]
@@ -434,30 +457,22 @@ class BrowserSmokeTests(unittest.TestCase):
     def test_an_image_that_finishes_uploading_after_another_task_opens_stays_with_its_task(self):
         self.load("#BE-03")
         self.open_task("BE-03")
-        # Uploads wait until the test lets them through.
-        held = []
-        self.page.on("Fetch.requestPaused", lambda p: held.append(p["requestId"]))
-        self.page.send("Fetch.enable", patterns=[{"urlPattern": "*/api/files"}])
-
-        def upload_held():
-            self.page.logged()  # takes in the events that arrived meanwhile
-            return held
-
-        def let_upload_through():
-            self.page.post("Fetch.continueRequest", requestId=held.pop())
-        toasts = "document.querySelector('#toasts').innerText"
+        self.hold_uploads()
 
         # The note box: the image waits in the note draft of the task it was pasted in.
         self.page.js(f"{NOTE_BOX}.focus(); document.execCommand('insertText', false, 'On BE-03:');")
         self.paste_image(NOTE_BOX)
-        self.wait_for("the upload to start", upload_held)
+        self.wait_for_upload()
+        # Leaving the page now would lose the image, which is in no editor yet.
+        leave = "(() => { const e = new Event('beforeunload', { cancelable: true }); dispatchEvent(e); return e.defaultPrevented; })()"
+        self.assertTrue(self.page.js(leave))
         self.open_task("BE-02")
         self.page.js(f"{NOTE_BOX}.focus(); document.execCommand('insertText', false, 'On BE-02');")
-        let_upload_through()
+        self.let_upload_through()
         went = "The image is in your note on BE-03"
-        self.until("the image to land", f"{toasts}.includes({json.dumps(went)}) || {NOTE_BOX}.value !== 'On BE-02'")
+        self.until("the image to land", f"{TOASTS}.includes({json.dumps(went)}) || {NOTE_BOX}.value !== 'On BE-02'")
         self.assertEqual(self.page.js(f"{NOTE_BOX}.value"), "On BE-02")
-        self.assertIn(went, self.page.js(toasts))
+        self.assertIn(went, self.page.js(TOASTS))
         self.open_task("BE-03")
         self.assertRegex(self.page.js(f"{NOTE_BOX}.value"), r"\AOn BE-03:\n!\[login form\]\(kanvas-files/[0-9a-f]{16}\.png\)\Z")
 
@@ -465,16 +480,50 @@ class BrowserSmokeTests(unittest.TestCase):
         self.page.js(EDIT_DESC)
         self.until("the description editor of BE-03", f"!!{DESC_BOX}")
         self.paste_image(DESC_BOX)
-        self.wait_for("the upload to start", upload_held)
+        self.wait_for_upload()
         self.open_task("BE-02")
         self.page.js(EDIT_DESC)
         self.until("the description editor of BE-02", f"!!{DESC_BOX}")
         before = self.page.js(f"{DESC_BOX}.value")
-        let_upload_through()
+        self.let_upload_through()
         closed = "The editor closed before the image was ready"
-        self.until("the image to land", f"{toasts}.includes({json.dumps(closed)}) || {DESC_BOX}.value !== {json.dumps(before)}")
+        self.until("the image to land", f"{TOASTS}.includes({json.dumps(closed)}) || {DESC_BOX}.value !== {json.dumps(before)}")
         self.assertEqual(self.page.js(f"{DESC_BOX}.value"), before)
-        self.assertIn(closed, self.page.js(toasts))
+        self.assertIn(closed, self.page.js(TOASTS))
+        self.page.send("Fetch.disable")
+        self.assertEqual(self.page.logged(), [])
+
+    def test_an_image_for_one_note_stays_out_of_another_notes_editor(self):
+        self.load("#BE-02")
+        self.open_task("BE-02")
+        self.hold_uploads()
+
+        # Every note editor has the same label; the image waits while one note's editor closes and another's opens.
+        older = self.edit_note(1)
+        self.paste_image(NOTE_EDITOR)
+        self.wait_for_upload()
+        self.page.js(CLOSE_NOTE_EDITOR)
+        self.until("the editor to close", f"!{NOTE_EDITOR}")
+        newer = self.edit_note(0)
+        self.let_upload_through()
+        closed = "The editor closed before the image was ready"
+        self.until("the image to land", f"{TOASTS}.includes({json.dumps(closed)}) || {NOTE_EDITOR}.value !== {json.dumps(newer)}")
+        self.assertEqual(self.page.js(f"{NOTE_EDITOR}.value"), newer)
+        self.assertIn(closed, self.page.js(TOASTS))
+
+        # The editor of the same note, opened again, still takes the image.
+        self.page.js(CLOSE_NOTE_EDITOR)
+        self.until("the editor to close", f"!{NOTE_EDITOR}")
+        self.assertEqual(self.edit_note(1), older)
+        self.paste_image(NOTE_EDITOR)
+        self.wait_for_upload()
+        self.page.js(CLOSE_NOTE_EDITOR)
+        self.until("the editor to close", f"!{NOTE_EDITOR}")
+        self.edit_note(1)
+        self.let_upload_through()
+        image = r"\n?!\[login form\]\(kanvas-files/[0-9a-f]{16}\.png\)\n?"
+        text = self.until("the image in the note's editor", f"/!\\[login form\\]/.test({NOTE_EDITOR}.value) && {NOTE_EDITOR}.value")
+        self.assertEqual(re.sub(image, "", text), older)
         self.page.send("Fetch.disable")
         self.assertEqual(self.page.logged(), [])
 
