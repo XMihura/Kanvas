@@ -1292,8 +1292,9 @@ class WorkflowTests(TempBoard):
                 "ops.state('DV-02', seen('DV-02'), 'doing', '', '2026-10-30T09:00:00Z')(b); out.push(structuredClone(get('DV-02')));"
                 "ops.state('DV-02', seen('DV-02'), 'review', '', '2026-10-30T10:00:00Z')(b); out.push(get('DV-02').started);"
                 "ops.state('DV-02', seen('DV-02'), 'todo', 'Not yet')(b); out.push(get('DV-02').started || null);"
-                "const before = seen('DV-05'); get('DV-05').state = 'doing'; get('DV-05').started = { at: 'x', by: 'codex' };"
-                "ops.state('DV-05', before, 'doing')(b); out.push([get('DV-05').started, get('DV-05').notes.length]);"
+                "const start = ops.state('DV-05', seen('DV-05'), 'doing'); start(structuredClone(b));"
+                "get('DV-05').state = 'doing'; get('DV-05').started = { at: 'x', by: 'codex' };"
+                "start(b); out.push([get('DV-05').started, get('DV-05').notes.length]);"
                 "process.stdout.write(JSON.stringify(out));")
         sections = [("function mustFind(", "\n// ----"), ("function inlineMd(", "\n// ----")]
         started, review, back, replay = json.loads(run_html_js(self, code, json.dumps(board), sections))

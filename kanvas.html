@@ -2529,10 +2529,12 @@ const ops = {
     if (from === "proposed" && t.state === "proposed" && state !== "proposed" && revisedSince(t, seen)) {
       throw new Error(`${t.id} was revised since you opened it; read the new version first`);
     }
-    if (state === "doing" && t.state !== "doing") { t.started = { at, by: "human" }; text = text || "Started in the board."; }
+    const starts = state === "doing" && t.state !== "doing";
+    if (starts) t.started = { at, by: "human" };
     else if (state === "todo" || state === "proposed") delete t.started;
     t.state = state;
-    if (text) addNote(t, text, at);
+    const note = text || (starts ? "Started in the board." : "");
+    if (note) addNote(t, note, at);
   },
   note: (id, text, at = nowIso()) => (b) => addNote(mustFind(b, id), text, at),
   // Notes are found by author, time and text, so an edit still finds its note after agents add more.
