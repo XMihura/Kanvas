@@ -208,6 +208,9 @@ class FormatTests(unittest.TestCase):
                  "numbers": [1.0, -0.0, 1e21, 1e-7, 0.1, 2 ** 53 + 1, 10 ** 30, 123.456, 5e-324]},
                 {"id": "G-02", "title": "Lone \ud800 surrogate", "state": None, "deps": ["G-01"], "yolo": 0,
                  "notes": [{"at": "2026-10-21T09:00:00Z", "by": "codex", "text": "x", "4": 4}]},
+                {"yolo_before": "yes", "started": {"by": "human", "at": "2026-10-21T09:00:00Z", "2": 2}, "id": "G-03", "title": "Started"},
+                {"id": "G-04", "title": "Odd records", "yolo_before": 0, "started": [], "zzz": 1},
+                {"id": "G-05", "title": "", "started": "", "yolo_before": None},
             ],
         }))
 
@@ -1618,6 +1621,81 @@ class YoloTests(TempBoard):
         self.assertEqual(seen, ["proposed", "blocked", "blocked", "proposed", "proposed", "proposed", "proposed"])
         # Y-01 was linked in before (by an agent) and stays proposed; Y-07 is outside the chain.
         self.assertEqual(after, ["proposed", "todo", "todo", "todo", "todo", "todo", "proposed", "todo"])
+
+    def test_agents_stop_before_a_task_left_to_the_human(self):
+        board = self.board()
+        t = kanvas.find_task(board, "DV-03")
+        del t["yolo"]
+        t["yolo_before"] = True
+        write_board(self.path, board)
+        self.assertEqual(list(json.loads(self.raw())["tasks"][2])[-1], "yolo_before")
+        _, out, _ = self.run_cli("status")
+        self.assertIn("YOLO before DV-03: tasks marked (YOLO) need no approval", out)
+        self.assertIn("DV-03  Task DV-03  (waiting on DV-02)  (left to the human)", out)
+        self.assertIn("YOLO:   before DV-03, which is left to the human; you may start it", self.run_cli("show", "DV-02")[1])
+        self.assertIn("YOLO:   left to the human: YOLO covers what this task depends on and stops here", self.run_cli("show", "DV-03")[1])
+        self.run_cli("start", "DV-02")
+        _, out, _ = self.run_cli("finish", "DV-02", "-m", "Parser done")
+        self.assertIn("YOLO covers it before DV-03, so it skips review.", out)
+        self.assertIn("Everything DV-03 depends on is done, and the human left it to themselves: stop here and tell them.", out)
+        self.assertEqual(self.get("DV-02")["state"], "done")
+        _, out, _ = self.run_cli("ready")
+        self.assertEqual(out.splitlines(), ["DV-03  Task DV-03  (left to the human)", "DV-05  Task DV-05"])
+        self.assertNotIn("YOLO before", self.run_cli("status")[1])
+        # When the human asks an agent to do it after all, it still comes back for review.
+        self.run_cli("start", "DV-03")
+        self.assertNotIn("left to the human", self.run_cli("show", "DV-03")[1])
+        self.run_cli("finish", "DV-03", "-m", "Feature done")
+        self.assertEqual(self.get("DV-03")["state"], "review")
+
+    def test_a_task_left_to_the_human_inside_a_chain_goes_to_review(self):
+        board = self.board()
+        kanvas.find_task(board, "DV-02")["yolo_before"] = True
+        write_board(self.path, board)
+        self.assertEqual(kanvas.yolo_cover(self.board()), {"DV-03": "DV-03", "DV-01": "DV-03"})
+        self.assertIn("DV-02  Task DV-02  (left to the human)", self.run_cli("ready")[1])
+        self.run_cli("start", "DV-02")
+        self.run_cli("finish", "DV-02", "-m", "Parser done")
+        self.assertEqual(self.get("DV-02")["state"], "review")
+        board = self.board()
+        kanvas.find_task(board, "DV-02")["state"] = "done"
+        write_board(self.path, board)
+        self.assertIn("DV-03  Task DV-03  (YOLO)", self.run_cli("ready")[1])
+
+    def test_html_yolo_cover_with_tasks_left_to_the_human_matches_python(self):
+        board = kanvas.new_board()
+        board["tasks"] = [task("S-01"), task("S-02", deps=["S-01"], yolo_before=True), task("S-03", deps=["S-02"]),
+                          task("S-04", deps=["S-03"], yolo=True), task("S-05"), task("S-06", deps=["S-05"], yolo_before=True),
+                          task("S-07", "review", deps=["S-05"], yolo_before=True), task("S-08", deps=["S-06"], yolo_before=1),
+                          task("S-09", deps=["S-01"], yolo=True, yolo_before=True)]
+        out = run_html_js(self, "process.stdout.write(JSON.stringify(Object.fromEntries(yoloCoverIn(normalize(input)))));", json.dumps(board))
+        cover = kanvas.yolo_cover(kanvas.parse_board(json.dumps(board)))
+        self.assertEqual(json.loads(out), cover)
+        self.assertEqual(cover, {"S-04": "S-04", "S-03": "S-04", "S-01": "S-04", "S-05": "S-06"})
+
+    def test_html_yolo_switches_between_agents_and_the_human(self):
+        board = kanvas.new_board()
+        board["tasks"] = [task("W-01", "proposed"), task("W-02", "proposed", deps=["W-01"]), task("W-03", "proposed", deps=["W-02"], yolo_before=True),
+                          task("W-04", "proposed", deps=["W-03"], yolo=True), task("W-05", "proposed", deps=["W-04"])]
+        steps = [("W-05", "before"), ("W-02", "before"), ("W-02", "on"), ("W-03", "on"), ("W-05", "on"), ("W-05", "off")]
+        code = ("const b = normalize(input), out = [];"
+                f"for (const [id, mode] of {json.dumps(steps)}) {{ ops.yolo(id, mode)(b);"
+                "  out.push(b.tasks.map((t) => `${t.state[0]}${t.yolo ? 'Y' : ''}${t.yolo_before ? 'S' : ''}`).join(' ')); }"
+                "process.stdout.write(JSON.stringify(out));")
+        sections = [("function mustFind(", "\n// ----"), ("function inlineMd(", "\n// ----")]
+        out = json.loads(run_html_js(self, code, json.dumps(board), sections))
+        self.assertEqual(out, [
+            # YOLO before W-05 approves what it depends on, keeps W-03 left to the human, and takes over W-04's YOLO.
+            "t t pS t pS",
+            # Leaving W-02 to the human takes it out of the chain and changes nothing else.
+            "t tS pS t pS",
+            "t t pS t pS",
+            # Giving W-03 to the agents approves it, as a link into the chain would.
+            "t t t t pS",
+            # YOLO up to W-05 approves it, and agents do it too.
+            "t t t t tY",
+            "t t t t t",
+        ])
 
 
 class ProposalTests(TempBoard):

@@ -380,6 +380,43 @@ class BrowserSmokeTests(unittest.TestCase):
         self.until("the panel without the hint", "!document.querySelector('#panel .now').innerText.includes('You started it')")
         self.assertEqual(self.page.logged(), [])
 
+    def card_menu(self, tid):
+        """Right-clicks the card of `tid` and returns its menu's text."""
+        card = f"document.querySelector('.card[data-id={json.dumps(tid)}]')"
+        self.page.js(f"""(() => {{ const r = {card}.getBoundingClientRect();
+            {card}.dispatchEvent(new MouseEvent('contextmenu', {{ bubbles: true, cancelable: true, clientX: r.left + 20, clientY: r.top + 10 }})); }})()""")
+        return self.until(f"the menu of {tid}", "document.querySelector('.ctx-menu')?.innerText")
+
+    def click_in_menu(self, text):
+        self.page.js(f"[...document.querySelectorAll('.ctx-menu button')].find((b) => b.innerText.includes({json.dumps(text)})).click()")
+
+    def test_the_card_menu_leaves_a_task_of_a_yolo_chain_to_the_human_and_gives_it_back(self):
+        self.load()
+        self.assertIn("YOLO up to here…", self.card_menu("LN-02"))
+        self.click_in_menu("YOLO up to here")
+        self.until("the YOLO dialog", "!!document.querySelector('dialog.dlg .yolo-choices input[value=on]:checked')")
+        self.page.js("document.querySelector('dialog.dlg button[value=ok]').click()")
+        board = lambda: kanvas.load_board(self.path)
+        self.wait_for("YOLO in kanvas.json", lambda: kanvas.find_task(board(), "LN-02").get("yolo"))
+
+        menu = self.card_menu("FE-03")
+        self.assertIn("YOLO up to LN-02", menu)
+        pressed = "[...document.querySelectorAll('.ctx-menu .yolo-track button')].map((b) => b.innerText.trim() + ':' + b.getAttribute('aria-pressed'))"
+        self.assertEqual(self.page.js(pressed), ["Agents do it:true", "Leave to me:false"])
+        self.click_in_menu("Leave to me")
+        self.wait_for("FE-03 left to the human", lambda: kanvas.find_task(board(), "FE-03").get("yolo_before"))
+        cover = kanvas.yolo_cover(board())
+        self.assertNotIn("FE-03", cover)
+        self.assertEqual((cover["FE-02"], cover["LN-02"]), ("LN-02", "LN-02"))
+        self.until("the stop on the card", "document.querySelector('.card[data-id=\"FE-03\"]').classList.contains('yolo-stop')"
+                                           " && document.querySelector('.card[data-id=\"FE-03\"] .yolo-tag.stop')?.innerText.includes('STOP')")
+        self.card_menu("FE-03")
+        self.assertEqual(self.page.js(pressed), ["Agents do it:false", "Leave to me:true"])
+        self.click_in_menu("Agents do it")
+        self.wait_for("FE-03 back with the agents", lambda: "yolo_before" not in kanvas.find_task(board(), "FE-03"))
+        self.assertEqual(kanvas.yolo_cover(board()).get("FE-03"), "LN-02")
+        self.assertEqual(self.page.logged(), [])
+
     def open_other_board(self):
         folder = os.path.join(self.dir, "other")
         os.mkdir(folder)

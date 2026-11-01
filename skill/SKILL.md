@@ -45,6 +45,8 @@ The human can put a task under **YOLO** in the board. That covers the task and e
 - when YOLO tasks follow one another in a chain, only the last one goes to review;
 - YOLO ends once its task is in review or done.
 
+The human can also leave a task to themselves. YOLO then covers everything that task depends on, as above, and stops before it: the CLI marks it `(left to the human)`, and `finish` tells you when everything before it is done. Start it only when the human asks you to; finishing it then sends it to review.
+
 Only the human can turn YOLO on or off. A proposal you link into a YOLO chain with `depend` stays a proposal: the YOLO task waits for it, and you start it only after the human approves it in the board, so ask them to. Linking an approved task into the chain puts it under YOLO, so it is done without review; do that only for work the human clearly asked for.
 
 ## Session protocol

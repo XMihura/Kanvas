@@ -48,9 +48,9 @@ STATES = ("proposed", "todo", "doing", "review", "done")
 ID_RE = re.compile(r"^[A-Za-z][A-Za-z0-9]*-\d+$")
 PREFIX_RE = re.compile(r"^[A-Z][A-Z0-9]{0,5}$")
 UNGROUPED_PREFIX = "G"
-# Keys added after the first release go last, where older versions keep keys they do not know, so they write the
-# same file.
-TASK_KEYS = ("id", "title", "state", "group", "deps", "yolo", "at", "by", "desc", "notes", "started")
+# Keys added after the first release go last: older versions write the keys they do not know after the ones they
+# know, so they write the same file.
+TASK_KEYS = ("id", "title", "state", "group", "deps", "yolo", "at", "by", "desc", "notes", "started", "yolo_before")
 REQUIRED_TASK_KEYS = ("id", "title", "state")
 GROUP_KEYS = ("id", "name")
 NOTE_KEYS = ("at", "by", "edited", "text")
@@ -133,10 +133,11 @@ def parse_board(text):
         t["desc"] = _js_text(t.get("desc"))
         deps = t.get("deps")
         t["deps"] = [_js_str(d) for d in deps] if isinstance(deps, list) else []
-        if _js_truthy(t.get("yolo")):
-            t["yolo"] = True
-        else:
-            t.pop("yolo", None)
+        for flag in ("yolo", "yolo_before"):
+            if _js_truthy(t.get(flag)):
+                t[flag] = True
+            else:
+                t.pop(flag, None)
         notes = t.get("notes")
         t["notes"] = [n for n in notes if isinstance(n, dict)] if isinstance(notes, list) else []
         if not all(isinstance(n.get("text", ""), str) for n in t["notes"]):
@@ -504,6 +505,11 @@ def yolo_active(task):
     return bool(task.get("yolo")) and task.get("state") not in ("review", "done")
 
 
+def yolo_stop(task):
+    """A task left to the human under YOLO counts until it goes to review, like a YOLO task."""
+    return bool(task.get("yolo_before")) and task.get("state") not in ("review", "done")
+
+
 def yolo_cover(board):
     """Map task ID (upper case) -> ID of the YOLO task covering it.
 
@@ -514,19 +520,30 @@ def yolo_cover(board):
     stays a proposal until a human approves it.
     Only the last YOLO task of a chain goes to review: a YOLO task that another
     one depends on is covered by it like the rest of the chain.
+    A task with `yolo_before` is left to the human: it covers what it depends on
+    in the same way, and no chain covers it, so agents stop before it.
     """
     tasks = task_map(board)
-    active = [t for t in board["tasks"] if yolo_active(t)]
-    reach = [(t, _upstream(tasks, t)) for t in active]
-    inside = set().union(*(up for _, up in reach))
+    stops = [t for t in board["tasks"] if yolo_stop(t)]
+    out = {t["id"].upper() for t in stops}
+    reach = [(t, _upstream(tasks, t)) for t in board["tasks"] if yolo_active(t) and t["id"].upper() not in out]
+    held = [(t, _upstream(tasks, t)) for t in stops]
+    inside = set().union(*(up for _, up in reach + held))
     cover = {}
     for t, up in reach:
         if t["id"].upper() in inside:
             continue
         cover.setdefault(t["id"].upper(), t["id"])
-        for k in up:
+        for k in up - out:
+            cover.setdefault(k, t["id"])
+    for t, up in held:
+        for k in up - out:
             cover.setdefault(k, t["id"])
     return cover
+
+
+def unfinished_before(tasks, task):
+    return any(d and d["state"] != "done" for d in map(tasks.get, _upstream(tasks, task)))
 
 
 def _upstream(tasks, task):
@@ -859,6 +876,8 @@ def id_width(tasks):
 
 
 def yolo_mark(task, cover):
+    if yolo_stop(task):
+        return "  (left to the human)" if task["state"] != "doing" else ""
     return "  (YOLO)" if cover and task["state"] in ("todo", "doing") and task["id"].upper() in cover else ""
 
 
@@ -915,13 +934,17 @@ def print_task(board, task):
     if task.get("by"):
         print(f"By:     {task['by']}" + (f", {task['at']}" if task.get("at") else ""))
     via = cover.get(task["id"].upper())
-    if via and task["state"] == "proposed":
-        print(f"YOLO:   joins the chain of {via} once a human approves it")
+    before = bool(via) and yolo_stop(tasks[via.upper()])
+    if yolo_stop(task) and task["state"] != "doing":
+        print("YOLO:   left to the human: YOLO covers what this task depends on and stops here; start it only when they ask you to")
+    elif via and task["state"] == "proposed":
+        print(f"YOLO:   joins the chain {'before' if before else 'of'} {via} once a human approves it")
     elif via and task["state"] not in ("review", "done"):
         if via == task["id"]:
             print("YOLO:   set on this task; you may start it without approval, and finishing sends it to review")
         else:
-            print(f"YOLO:   through {via}; you may start it without approval, and finishing marks it done (no review)")
+            chain = f"before {via}, which is left to the human" if before else f"through {via}"
+            print(f"YOLO:   {chain}; you may start it without approval, and finishing marks it done (no review)")
     if task.get("deps"):
         print("Depends on:")
         for dep in task["deps"]:
@@ -1053,6 +1076,11 @@ def cmd_status(args):
         names = ", ".join(yolo)
         print(f"YOLO on {names}: tasks marked (YOLO) need no approval and finishing them marks them done; "
               f"{names} {'itself goes' if len(yolo) == 1 else 'themselves go'} to review.")
+    stops = [t["id"] for t in board["tasks"] if yolo_stop(t) and t["state"] != "doing" and unfinished_before(tasks, t)]
+    if stops:
+        names = ", ".join(stops)
+        print(f"YOLO before {names}: tasks marked (YOLO) need no approval and finishing them marks them done; "
+              f"{names} {'is' if len(stops) == 1 else 'are'} left to the human, so stop there.")
     sections = (
         ("doing", "Doing"),
         ("review", "Waiting for human review"),
@@ -1212,11 +1240,18 @@ def cmd_finish(args):
         add_note(t, summary, actor(args))
         via = yolo_cover(board).get(t["id"].upper())
         t["state"] = "done" if via and via.upper() != t["id"].upper() else "review"
-        return t, via
+        tasks = task_map(board)
+        reached = [s["id"] for s in board["tasks"] if yolo_stop(s) and s["state"] != "doing"
+                   and t["id"].upper() in _upstream(tasks, s) and not unfinished_before(tasks, s)]
+        return t, via, yolo_stop(tasks[via.upper()]) if via else False, reached
 
-    t, via = mutate(path, op)
+    t, via, before, reached = mutate(path, op)
     if t["state"] == "done":
-        print(f"Finished {t['id']} (doing -> done). YOLO covers it through {via}, so it skips review.")
+        print(f"Finished {t['id']} (doing -> done). YOLO covers it {'before' if before else 'through'} {via}, so it skips review.")
+        if reached:
+            names, one = ", ".join(reached), len(reached) == 1
+            print(f"Everything {names} {'depends' if one else 'depend'} on is done, and the human left {'it' if one else 'them'} "
+                  f"to themselves: stop here and tell them.")
     elif via:
         print(f"Finished {t['id']} (doing -> review). YOLO is set on it, so a human reviews it; its YOLO chain is complete.")
     else:
