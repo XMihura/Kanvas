@@ -209,7 +209,7 @@ svg#edges { position: absolute; left: 0; top: 0; overflow: visible; pointer-even
 .yolo-mark { display: inline-flex; color: var(--yolo-mark); filter: drop-shadow(0 0 3px color-mix(in srgb, var(--yolo) 80%, transparent)); }
 .yolo-mark .icon svg { width: 13px; height: 13px; fill: currentColor; }
 .yolo-btn .icon svg, .yolo-go .icon svg { fill: currentColor; }
-/* A task left to the human: the chain stops at a still, dashed ring. */
+/* A task YOLO stops before: the chain ends at a still, dashed ring. */
 .card.yolo-stop::after { content: ""; position: absolute; inset: -5px; border-radius: 13px; border: 2px dashed var(--yolo); pointer-events: none; }
 .yolo-tag.stop { color: var(--text); background: color-mix(in srgb, var(--yolo) 18%, var(--surface)); box-shadow: inset 0 0 0 1.5px var(--yolo); animation: none; }
 .yolo-tag.stop .icon { color: var(--yolo-mark); }
@@ -1079,11 +1079,11 @@ function upstreamOf(b, id) {
 
 // A YOLO mark counts until its task goes to review (mirrors yolo_active in kanvas.py).
 const yoloActive = (t) => !!t.yolo && t.state !== "review" && t.state !== "done";
-// So does a task left to the human, whose chain agents finish up to it (mirrors yolo_stop in kanvas.py).
+// So does a task YOLO stops before, whose chain agents finish up to it (mirrors yolo_stop in kanvas.py).
 const yoloStop = (t) => !!t.yolo_before && t.state !== "review" && t.state !== "done";
 
 // Task key -> ID of the YOLO task covering it (mirrors yolo_cover in kanvas.py). Only the last YOLO task of a chain
-// covers it: a YOLO task that another one depends on is covered by that one. A task left to the human covers what
+// covers it: a YOLO task that another one depends on is covered by that one. A task YOLO stops before covers what
 // it depends on, and no chain covers it.
 function yoloCoverIn(b) {
   const ix = indexOf(b);
@@ -1112,8 +1112,8 @@ function yoloCoverIn(b) {
 }
 
 // Turning YOLO on approves the chain's proposals and accepts what waits for review. The chain keeps one YOLO mark,
-// so the marks of tasks inside it go. With `before`, the task is left to the human; it keeps its state, and so do
-// the tasks in the chain that are left to the human.
+// so the marks of tasks inside it go. With `before`, YOLO stops before the task, which keeps its state, as do the
+// other tasks in the chain that YOLO stops before.
 function yoloOn(b, id, before = false) {
   const ix = indexOf(b), t = ix.get(key(id));
   if (before) { t.yolo_before = true; delete t.yolo; } else { t.yolo = true; delete t.yolo_before; }
@@ -2362,7 +2362,7 @@ function describeChange(a, z) {
   const yolo = z.tasks.find((t) => t.yolo && A.has(key(t.id)) && !A.get(key(t.id)).yolo);
   if (yolo) return `turning on YOLO up to ${yolo.id}`;
   const stop = z.tasks.find((t) => t.yolo_before && A.has(key(t.id)) && !A.get(key(t.id)).yolo_before);
-  if (stop) return yoloCoverIn(a).has(key(stop.id)) ? `leaving ${stop.id} to you` : `turning on YOLO before ${stop.id}`;
+  if (stop) return yoloCoverIn(a).has(key(stop.id)) ? `stopping the YOLO before ${stop.id}` : `turning on YOLO before ${stop.id}`;
   const acts = new Map();
   const act = (words, id) => { if (!acts.has(words)) acts.set(words, []); if (id) acts.get(words).push(id); };
   for (const [k, t] of Z) if (!A.has(k)) act("adding %", t.id);
@@ -2582,8 +2582,8 @@ const ops = {
     if (revised.length) throw new Error(`${revised.join(", ")} ${revised.length > 1 ? "were" : "was"} revised since you looked; read the new version first`);
     for (const [t] of now) t.state = "todo";
   },
-  // `mode` is "on" (agents do the task too), "before" (agents stop before it; the human does it) or "off".
-  // Leaving a task of a chain to the human only takes it out; giving it back approves it, as a link would.
+  // `mode` is "on" (agents do the task too), "before" (agents stop before it) or "off". Stopping before a task
+  // of a chain only takes it out; taking it back in approves it, as a link would.
   yolo: (id, mode) => (b) => {
     const t = mustFind(b, id), cover = yoloCoverIn(b), via = cover.get(key(t.id));
     if (mode === "off") { delete t.yolo; delete t.yolo_before; return; }
@@ -2739,7 +2739,7 @@ function renderHeader() {
     const what = andList([targets.length ? `YOLO on ${ids(targets)}` : null, stops.length ? `YOLO before ${ids(stops)}` : null].filter(Boolean));
     const tasks = `${charged} task${charged === 1 ? "" : "s"}`;
     chip.replaceChildren(icon("zap"), h("span", { class: "lbl" }, "YOLO"), h("b", {}, charged));
-    chip.dataset.tip = `${what}: agents take on ${tasks} without approval${targets.length ? ` and send ${targets.length > 1 ? "these" : "it"} to you for review` : ""}${stops.length ? `, then stop before ${ids(stops)}, which ${stops.length > 1 ? "are" : "is"} left to you` : ""}. Click to open ${ends.length > 1 ? "them one by one" : "it"}.`;
+    chip.dataset.tip = `${what}: agents take on ${tasks} without approval${targets.length ? ` and send ${targets.length > 1 ? "these" : "it"} to you for review` : ""}${stops.length ? `, and stop before ${ids(stops)} until you say so` : ""}. Click to open ${ends.length > 1 ? "them one by one" : "it"}.`;
     chip.setAttribute("aria-label", `${what}: ${tasks} without approval`);
     chip.onclick = () => { const i = ends.findIndex((t) => same(t.id, ui.selected)); select(ends[(i + 1) % ends.length].id); };
   }
@@ -2808,16 +2808,16 @@ function cardFoot(t) {
 }
 
 const isYoloTarget = (t) => yoloActive(t) && same(yoloVia(t), t.id);
-// A task left to the human shows it until someone starts it.
+// A task YOLO stops before shows it until someone starts it.
 const isYoloStop = (t) => yoloStop(t) && t.state !== "doing";
 const openBefore = (t) => [...upstreamOf(board, t.id)].map(get).filter((x) => x && x.state !== "done" && !same(x.id, t.id));
-// The chain a task left to the human sits in: the YOLO further along that would cover the task otherwise.
+// The chain a task YOLO stops before sits in: the YOLO further along that would cover the task otherwise.
 const yoloHolder = (t) => board.tasks.find((x) => !same(x.id, t.id) && (isYoloTarget(x) || yoloStop(x)) && upstreamOf(board, x.id).has(key(t.id))) || null;
 const yoloEnd = (id) => (yoloStop(get(id) || {}) ? `YOLO before ${id}` : `YOLO up to ${id}`);
 
 function yoloTag(t) {
   if (isYoloStop(t)) {
-    return h("span", { class: "yolo-tag stop", title: openBefore(t).length ? "Left to you: agents finish everything this task depends on without approval or review, then stop here" : "Left to you: agents leave this task to you" }, icon("stop"), "STOP");
+    return h("span", { class: "yolo-tag stop", title: openBefore(t).length ? "YOLO stops here: agents finish everything this task depends on without approval or review, then wait for you" : "YOLO stops here: agents start this task only when you say so" }, icon("stop"), "STOP");
   }
   if (t.yolo && t.state !== "done" && (!yoloActive(t) || isYoloTarget(t))) {
     return h("span", { class: "yolo-tag", title: yoloActive(t) ? "YOLO: agents finish everything this task depends on without approval or review, then this task, which comes to you for review" : "YOLO chain complete: this task waits for your review" }, icon("zap"), "YOLO");
@@ -3810,27 +3810,27 @@ function stateMoves(t) {
   }
 }
 
-// Agents do every task of a YOLO chain, except tasks left to the human, which they stop before. Where a task of a
-// chain stands: `chain` names the task the chain ends with, `own` says the chain is the task's own, and `canLeave`
-// that something before the task is left for the agents. null for tasks outside a chain.
+// Agents do every task of a YOLO chain, and stop before the tasks marked for that. Where a task of a chain stands:
+// `chain` names the task the chain ends with, `own` says the chain is the task's own, and `canStop` that something
+// before the task is left for the agents. null for tasks outside a chain.
 function yoloSwitch(t) {
   const stop = isYoloStop(t), target = isYoloTarget(t), via = yoloVia(t);
   if (!stop && !target && !(via && (t.state === "proposed" || t.state === "todo"))) return null;
   const holder = stop ? yoloHolder(t) : null, own = target || (stop && !holder);
-  return { stop, own, chain: own ? t.id : holder ? holder.id : via, canLeave: stop || !own || openBefore(t).length > 0 };
+  return { stop, own, chain: own ? t.id : holder ? holder.id : via, canStop: stop || !own || openBefore(t).length > 0 };
 }
 
 function setYolo(t, mode) {
-  return undoable(ops.yolo(t.id, mode), mode === "off" ? `YOLO is off for ${t.id}` : mode === "before" ? `${t.id} is left to you: agents stop before it` : `Agents do ${t.id} too`);
+  return undoable(ops.yolo(t.id, mode), mode === "off" ? `YOLO is off for ${t.id}` : mode === "before" ? `YOLO stops before ${t.id}` : `Agents do ${t.id} too`);
 }
 
-// Agents do it, or it is left to the human: the two sides of a task in a YOLO chain, the current one pressed.
+// Whether YOLO does a task of its chain or stops before it, the current choice pressed.
 function yoloTrack(t, sw, picked = () => {}) {
   const side = (mode, on, ic, label, tip) => h("button", { type: "button", class: on ? "on" : null, "aria-pressed": String(on), title: tip,
     onclick: () => { picked(); if (!on) setYolo(t, mode); } }, icon(ic), label);
-  return h("div", { class: "track yolo-track", role: "group", "aria-label": `Who does ${t.id}` },
-    side("on", !sw.stop, "zap", "Agents do it", sw.own ? `Agents finish everything ${t.id} depends on, then ${t.id}, and send it to you for review` : `Agents do ${t.id} without approval or review`),
-    side("before", sw.stop, "stop", "Leave to me", `Agents finish everything ${t.id} depends on, then stop: ${t.id} is left to you`));
+  return h("div", { class: "track yolo-track", role: "group", "aria-label": `YOLO at ${t.id}` },
+    side("on", !sw.stop, "zap", "Do it too", sw.own ? `Agents finish everything ${t.id} depends on, then ${t.id}, and send it to you for review` : `Agents do ${t.id} without approval or review`),
+    side("before", sw.stop, "stop", "Stop before", `Agents finish everything ${t.id} depends on, then wait for you before starting ${t.id}`));
 }
 
 // The YOLO part of a task's menu.
@@ -3838,7 +3838,7 @@ function yoloMenu(t) {
   const sw = yoloSwitch(t), off = { label: "Turn off YOLO", icon: "x", run: () => setYolo(t, "off") };
   if (sw) return [
     { head: h("span", { class: "yolo-head" }, icon(sw.stop && sw.own ? "stop" : "zap"), yoloEnd(sw.chain)) },
-    sw.canLeave ? { node: yoloTrack(t, sw, () => closeMenu(true)) } : null,
+    sw.canStop ? { node: yoloTrack(t, sw, () => closeMenu(true)) } : null,
     sw.own ? off : null,
   ];
   if (t.yolo) return [{ ...off, icon: "zap" }];
@@ -3852,15 +3852,15 @@ function yoloMenu(t) {
 }
 
 // Turns YOLO on up to `t` after saying what that does. When something before `t` is unfinished, the human chooses
-// whether agents do `t` too or leave it to them.
+// whether agents do `t` too or stop before it.
 async function startYolo(t, mode) {
   if (!prefs.skipYoloWarning) {
     const before = openBefore(t), inner = before.filter((x) => x.yolo).map((x) => x.id);
-    const kept = before.filter(yoloStop).map((x) => x.id), agents = before.length - kept.length;
+    const stops = before.filter(yoloStop).map((x) => x.id), agents = before.length - stops.length;
     const count = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
     const names = (ids) => (ids.length > 1 ? `${ids.slice(0, -1).join(", ")} and ${ids[ids.length - 1]}` : ids[0]);
-    const lead = agents ? `Agents finish the ${count(agents, "unfinished task")} ${t.id} depends on without approval or review${kept.length ? `, and leave ${names(kept)} to you` : ""}.`
-      : before.length ? `${t.id} waits for ${names(kept)}, which ${kept.length > 1 ? "are" : "is"} left to you.`
+    const lead = agents ? `Agents finish the ${count(agents, "unfinished task")} ${t.id} depends on without approval or review${stops.length ? `, stopping before ${names(stops)}` : ""}.`
+      : before.length ? `YOLO already stops before ${names(stops)}, which ${t.id} depends on.`
       : `Agents may start ${t.id} without approval and send it to you for review.`;
     const proposals = before.filter((x) => x.state === "proposed" && !yoloStop(x)).length + (!before.length && t.state === "proposed" ? 1 : 0);
     const reviews = before.filter((x) => x.state === "review").length;
@@ -3869,16 +3869,16 @@ async function startYolo(t, mode) {
       h("input", { type: "radio", name: "mode", value, checked: value === mode }), icon(ic), h("span", {}, h("b", {}, title), text));
     const data = await modal(`YOLO up to ${t.id}?`, [
       h("p", {}, `${lead}${inner.length ? ` This takes over the YOLO on ${names(inner)}.` : ""}${effects.length ? ` This ${effects.join(" and ")} now.` : ""}`),
-      before.length ? h("div", { class: "yolo-choices", role: "radiogroup", "aria-label": `Who does ${t.id}` },
-        choice("on", "zap", `Agents do ${t.id} too`, t.state === "proposed" ? "This approves it. Then it comes to you for review." : "Then it comes to you for review."),
-        choice("before", "stop", `Leave ${t.id} to me`, "Agents stop before it, and it waits for you.")) : null,
+      before.length ? h("div", { class: "yolo-choices", role: "radiogroup", "aria-label": `YOLO at ${t.id}` },
+        choice("on", "zap", `Do ${t.id} too`, t.state === "proposed" ? "This approves it. Then it comes to you for review." : "Then it comes to you for review."),
+        choice("before", "stop", `Stop before ${t.id}`, "Agents wait for you before starting it.")) : null,
       h("label", { class: "check" }, h("input", { type: "checkbox", name: "skip" }), "Don't ask again"),
     ], { ok: [icon("zap"), "YOLO"], okClass: "yolo-go" });
     if (!data) return;
     if (data.get("skip")) { prefs.skipYoloWarning = true; savePrefs(); }
     mode = data.get("mode") || mode;
   }
-  const said = mode === "before" ? `YOLO is on before ${t.id}, which is left to you` : `YOLO is on up to ${t.id}`;
+  const said = mode === "before" ? `YOLO is on and stops before ${t.id}` : `YOLO is on up to ${t.id}`;
   if (await undoable(ops.yolo(t.id, mode), said)) zap(t.id, mode === "before");
 }
 
@@ -4089,18 +4089,18 @@ function nowCard(t, vs, ro, note) {
     done: [icon("check"), "Done", null],
   }[vs];
   const via = yoloVia(t), complete = t.yolo && t.state === "review", stop = isYoloStop(t), holder = stop ? yoloHolder(t) : null;
-  const kept = isYoloTarget(t) ? openBefore(t).filter(yoloStop).map((x) => x.id) : [];
+  const stops = isYoloTarget(t) ? openBefore(t).filter(yoloStop).map((x) => x.id) : [];
   const chain = (id) => [yoloStop(get(id) || {}) ? "YOLO before " : "YOLO up to ", ref(id)];
-  const sw = ro || editing ? null : yoloSwitch(t), track = sw && sw.canLeave ? yoloTrack(t, sw) : null;
+  const sw = ro || editing ? null : yoloSwitch(t), track = sw && sw.canStop ? yoloTrack(t, sw) : null;
   const off = !ro && (t.yolo || (sw && sw.own)) ? h("button", { onclick: () => setYolo(t, "off") }, "Turn off") : null;
   const yolo = via || complete || stop ? h("div", { class: "now-yolo" },
     h("div", { class: "now-yolo-line" }, icon(stop ? "stop" : "zap"),
       h("span", {}, complete ? ["YOLO chain complete.", via ? [" The ", chain(via), " waits for your review."] : null]
-        : stop ? [openBefore(t).length ? "Left to you: agents finish everything it depends on without approval or review, then stop here." : "Left to you: agents leave it to you.",
-          holder ? [" Then they go on with the ", chain(holder.id), "."] : null]
+        : stop ? [openBefore(t).length ? "YOLO stops here: agents finish everything it depends on without approval or review, then wait for you." : "YOLO stops here: agents start it only when you say so.",
+          holder ? [` Once ${t.id} is done, they go on with the `, chain(holder.id), "."] : null]
         : !same(via, t.id) && t.state === "proposed" ? ["In the ", chain(via), ": once you approve it, agents finish it without review."]
         : !same(via, t.id) ? ["Covered by ", chain(via), ": no approval or review needed."]
-        : ["YOLO: agents finish what it needs, then send it to you for review.", kept.length ? [" ", list(kept), kept.length > 1 ? " are" : " is", " left to you."] : null]),
+        : ["YOLO: agents finish what it needs, then send it to you for review.", stops.length ? [" On the way, they stop before ", list(stops), "."] : null]),
       track ? null : off),
     track ? h("div", { class: "now-yolo-pick" }, track, off) : null) : null;
   const ya = ro || editing || t.yolo || via || stop || !["proposed", "todo", "blocked"].includes(vs) ? null

@@ -506,7 +506,7 @@ def yolo_active(task):
 
 
 def yolo_stop(task):
-    """A task left to the human under YOLO counts until it goes to review, like a YOLO task."""
+    """A task YOLO stops before counts until it goes to review, like a YOLO task."""
     return bool(task.get("yolo_before")) and task.get("state") not in ("review", "done")
 
 
@@ -520,8 +520,8 @@ def yolo_cover(board):
     stays a proposal until a human approves it.
     Only the last YOLO task of a chain goes to review: a YOLO task that another
     one depends on is covered by it like the rest of the chain.
-    A task with `yolo_before` is left to the human: it covers what it depends on
-    in the same way, and no chain covers it, so agents stop before it.
+    A task with `yolo_before` covers what it depends on in the same way, and no
+    chain covers it, so agents stop before it until the human says otherwise.
     """
     tasks = task_map(board)
     stops = [t for t in board["tasks"] if yolo_stop(t)]
@@ -877,7 +877,7 @@ def id_width(tasks):
 
 def yolo_mark(task, cover):
     if yolo_stop(task):
-        return "  (left to the human)" if task["state"] != "doing" else ""
+        return "  (YOLO stops here)" if task["state"] != "doing" else ""
     return "  (YOLO)" if cover and task["state"] in ("todo", "doing") and task["id"].upper() in cover else ""
 
 
@@ -936,14 +936,14 @@ def print_task(board, task):
     via = cover.get(task["id"].upper())
     before = bool(via) and yolo_stop(tasks[via.upper()])
     if yolo_stop(task) and task["state"] != "doing":
-        print("YOLO:   left to the human: YOLO covers what this task depends on and stops here; start it only when they ask you to")
+        print("YOLO:   stops here: YOLO covers what this task depends on; start this task only when the human asks you to")
     elif via and task["state"] == "proposed":
         print(f"YOLO:   joins the chain {'before' if before else 'of'} {via} once a human approves it")
     elif via and task["state"] not in ("review", "done"):
         if via == task["id"]:
             print("YOLO:   set on this task; you may start it without approval, and finishing sends it to review")
         else:
-            chain = f"before {via}, which is left to the human" if before else f"through {via}"
+            chain = f"up to {via}, where it stops" if before else f"through {via}"
             print(f"YOLO:   {chain}; you may start it without approval, and finishing marks it done (no review)")
     if task.get("deps"):
         print("Depends on:")
@@ -1080,7 +1080,7 @@ def cmd_status(args):
     if stops:
         names = ", ".join(stops)
         print(f"YOLO before {names}: tasks marked (YOLO) need no approval and finishing them marks them done; "
-              f"{names} {'is' if len(stops) == 1 else 'are'} left to the human, so stop there.")
+              f"YOLO stops before {names}, so stop there and tell the human.")
     sections = (
         ("doing", "Doing"),
         ("review", "Waiting for human review"),
@@ -1250,8 +1250,8 @@ def cmd_finish(args):
         print(f"Finished {t['id']} (doing -> done). YOLO covers it {'before' if before else 'through'} {via}, so it skips review.")
         if reached:
             names, one = ", ".join(reached), len(reached) == 1
-            print(f"Everything {names} {'depends' if one else 'depend'} on is done, and the human left {'it' if one else 'them'} "
-                  f"to themselves: stop here and tell them.")
+            print(f"Everything {names} {'depends' if one else 'depend'} on is done, and YOLO stops before {'it' if one else 'them'}: "
+                  f"stop here and tell the human.")
     elif via:
         print(f"Finished {t['id']} (doing -> review). YOLO is set on it, so a human reviews it; its YOLO chain is complete.")
     else:

@@ -1622,7 +1622,7 @@ class YoloTests(TempBoard):
         # Y-01 was linked in before (by an agent) and stays proposed; Y-07 is outside the chain.
         self.assertEqual(after, ["proposed", "todo", "todo", "todo", "todo", "todo", "proposed", "todo"])
 
-    def test_agents_stop_before_a_task_left_to_the_human(self):
+    def test_agents_stop_before_a_task_marked_for_it(self):
         board = self.board()
         t = kanvas.find_task(board, "DV-03")
         del t["yolo"]
@@ -1631,29 +1631,30 @@ class YoloTests(TempBoard):
         self.assertEqual(list(json.loads(self.raw())["tasks"][2])[-1], "yolo_before")
         _, out, _ = self.run_cli("status")
         self.assertIn("YOLO before DV-03: tasks marked (YOLO) need no approval", out)
-        self.assertIn("DV-03  Task DV-03  (waiting on DV-02)  (left to the human)", out)
-        self.assertIn("YOLO:   before DV-03, which is left to the human; you may start it", self.run_cli("show", "DV-02")[1])
-        self.assertIn("YOLO:   left to the human: YOLO covers what this task depends on and stops here", self.run_cli("show", "DV-03")[1])
+        self.assertIn("DV-03  Task DV-03  (waiting on DV-02)  (YOLO stops here)", out)
+        self.assertIn("YOLO:   up to DV-03, where it stops; you may start it", self.run_cli("show", "DV-02")[1])
+        self.assertIn("YOLO:   stops here: YOLO covers what this task depends on; start this task only when the human asks you to",
+                      self.run_cli("show", "DV-03")[1])
         self.run_cli("start", "DV-02")
         _, out, _ = self.run_cli("finish", "DV-02", "-m", "Parser done")
         self.assertIn("YOLO covers it before DV-03, so it skips review.", out)
-        self.assertIn("Everything DV-03 depends on is done, and the human left it to themselves: stop here and tell them.", out)
+        self.assertIn("Everything DV-03 depends on is done, and YOLO stops before it: stop here and tell the human.", out)
         self.assertEqual(self.get("DV-02")["state"], "done")
         _, out, _ = self.run_cli("ready")
-        self.assertEqual(out.splitlines(), ["DV-03  Task DV-03  (left to the human)", "DV-05  Task DV-05"])
+        self.assertEqual(out.splitlines(), ["DV-03  Task DV-03  (YOLO stops here)", "DV-05  Task DV-05"])
         self.assertNotIn("YOLO before", self.run_cli("status")[1])
         # When the human asks an agent to do it after all, it still comes back for review.
         self.run_cli("start", "DV-03")
-        self.assertNotIn("left to the human", self.run_cli("show", "DV-03")[1])
+        self.assertNotIn("stops here", self.run_cli("show", "DV-03")[1])
         self.run_cli("finish", "DV-03", "-m", "Feature done")
         self.assertEqual(self.get("DV-03")["state"], "review")
 
-    def test_a_task_left_to_the_human_inside_a_chain_goes_to_review(self):
+    def test_a_task_yolo_stops_before_inside_a_chain_goes_to_review(self):
         board = self.board()
         kanvas.find_task(board, "DV-02")["yolo_before"] = True
         write_board(self.path, board)
         self.assertEqual(kanvas.yolo_cover(self.board()), {"DV-03": "DV-03", "DV-01": "DV-03"})
-        self.assertIn("DV-02  Task DV-02  (left to the human)", self.run_cli("ready")[1])
+        self.assertIn("DV-02  Task DV-02  (YOLO stops here)", self.run_cli("ready")[1])
         self.run_cli("start", "DV-02")
         self.run_cli("finish", "DV-02", "-m", "Parser done")
         self.assertEqual(self.get("DV-02")["state"], "review")
@@ -1662,7 +1663,7 @@ class YoloTests(TempBoard):
         write_board(self.path, board)
         self.assertIn("DV-03  Task DV-03  (YOLO)", self.run_cli("ready")[1])
 
-    def test_html_yolo_cover_with_tasks_left_to_the_human_matches_python(self):
+    def test_html_yolo_cover_with_stops_matches_python(self):
         board = kanvas.new_board()
         board["tasks"] = [task("S-01"), task("S-02", deps=["S-01"], yolo_before=True), task("S-03", deps=["S-02"]),
                           task("S-04", deps=["S-03"], yolo=True), task("S-05"), task("S-06", deps=["S-05"], yolo_before=True),
@@ -1673,7 +1674,7 @@ class YoloTests(TempBoard):
         self.assertEqual(json.loads(out), cover)
         self.assertEqual(cover, {"S-04": "S-04", "S-03": "S-04", "S-01": "S-04", "S-05": "S-06"})
 
-    def test_html_yolo_switches_between_agents_and_the_human(self):
+    def test_html_yolo_switches_between_doing_a_task_and_stopping_before_it(self):
         board = kanvas.new_board()
         board["tasks"] = [task("W-01", "proposed"), task("W-02", "proposed", deps=["W-01"]), task("W-03", "proposed", deps=["W-02"], yolo_before=True),
                           task("W-04", "proposed", deps=["W-03"], yolo=True), task("W-05", "proposed", deps=["W-04"])]
@@ -1685,12 +1686,12 @@ class YoloTests(TempBoard):
         sections = [("function mustFind(", "\n// ----"), ("function inlineMd(", "\n// ----")]
         out = json.loads(run_html_js(self, code, json.dumps(board), sections))
         self.assertEqual(out, [
-            # YOLO before W-05 approves what it depends on, keeps W-03 left to the human, and takes over W-04's YOLO.
+            # YOLO before W-05 approves what it depends on, still stops before W-03, and takes over W-04's YOLO.
             "t t pS t pS",
-            # Leaving W-02 to the human takes it out of the chain and changes nothing else.
+            # Stopping before W-02 takes it out of the chain and changes nothing else.
             "t tS pS t pS",
             "t t pS t pS",
-            # Giving W-03 to the agents approves it, as a link into the chain would.
+            # Doing W-03 too approves it, as a link into the chain would.
             "t t t t pS",
             # YOLO up to W-05 approves it, and agents do it too.
             "t t t t tY",

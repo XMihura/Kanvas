@@ -390,7 +390,7 @@ class BrowserSmokeTests(unittest.TestCase):
     def click_in_menu(self, text):
         self.page.js(f"[...document.querySelectorAll('.ctx-menu button')].find((b) => b.innerText.includes({json.dumps(text)})).click()")
 
-    def test_the_card_menu_leaves_a_task_of_a_yolo_chain_to_the_human_and_gives_it_back(self):
+    def test_the_card_menu_makes_yolo_stop_before_a_task_of_its_chain_and_do_it_again(self):
         self.load()
         self.assertIn("YOLO up to here…", self.card_menu("LN-02"))
         self.click_in_menu("YOLO up to here")
@@ -402,18 +402,18 @@ class BrowserSmokeTests(unittest.TestCase):
         menu = self.card_menu("FE-03")
         self.assertIn("YOLO up to LN-02", menu)
         pressed = "[...document.querySelectorAll('.ctx-menu .yolo-track button')].map((b) => b.innerText.trim() + ':' + b.getAttribute('aria-pressed'))"
-        self.assertEqual(self.page.js(pressed), ["Agents do it:true", "Leave to me:false"])
-        self.click_in_menu("Leave to me")
-        self.wait_for("FE-03 left to the human", lambda: kanvas.find_task(board(), "FE-03").get("yolo_before"))
+        self.assertEqual(self.page.js(pressed), ["Do it too:true", "Stop before:false"])
+        self.click_in_menu("Stop before")
+        self.wait_for("YOLO to stop before FE-03", lambda: kanvas.find_task(board(), "FE-03").get("yolo_before"))
         cover = kanvas.yolo_cover(board())
         self.assertNotIn("FE-03", cover)
         self.assertEqual((cover["FE-02"], cover["LN-02"]), ("LN-02", "LN-02"))
         self.until("the stop on the card", "document.querySelector('.card[data-id=\"FE-03\"]').classList.contains('yolo-stop')"
                                            " && document.querySelector('.card[data-id=\"FE-03\"] .yolo-tag.stop')?.innerText.includes('STOP')")
         self.card_menu("FE-03")
-        self.assertEqual(self.page.js(pressed), ["Agents do it:false", "Leave to me:true"])
-        self.click_in_menu("Agents do it")
-        self.wait_for("FE-03 back with the agents", lambda: "yolo_before" not in kanvas.find_task(board(), "FE-03"))
+        self.assertEqual(self.page.js(pressed), ["Do it too:false", "Stop before:true"])
+        self.click_in_menu("Do it too")
+        self.wait_for("FE-03 back in the chain", lambda: "yolo_before" not in kanvas.find_task(board(), "FE-03"))
         self.assertEqual(kanvas.yolo_cover(board()).get("FE-03"), "LN-02")
         self.assertEqual(self.page.logged(), [])
 
