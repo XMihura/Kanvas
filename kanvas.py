@@ -48,7 +48,9 @@ STATES = ("proposed", "todo", "doing", "review", "done")
 ID_RE = re.compile(r"^[A-Za-z][A-Za-z0-9]*-\d+$")
 PREFIX_RE = re.compile(r"^[A-Z][A-Z0-9]{0,5}$")
 UNGROUPED_PREFIX = "G"
-TASK_KEYS = ("id", "title", "state", "group", "deps", "yolo", "at", "by", "desc", "notes")
+# Keys added after the first release go last: older versions write the keys they do not know after the ones they
+# know, so they write the same file.
+TASK_KEYS = ("id", "title", "state", "group", "deps", "yolo", "at", "by", "desc", "notes", "started", "yolo_before")
 REQUIRED_TASK_KEYS = ("id", "title", "state")
 GROUP_KEYS = ("id", "name")
 NOTE_KEYS = ("at", "by", "edited", "text")
@@ -131,10 +133,11 @@ def parse_board(text):
         t["desc"] = _js_text(t.get("desc"))
         deps = t.get("deps")
         t["deps"] = [_js_str(d) for d in deps] if isinstance(deps, list) else []
-        if _js_truthy(t.get("yolo")):
-            t["yolo"] = True
-        else:
-            t.pop("yolo", None)
+        for flag in ("yolo", "yolo_before"):
+            if _js_truthy(t.get(flag)):
+                t[flag] = True
+            else:
+                t.pop(flag, None)
         notes = t.get("notes")
         t["notes"] = [n for n in notes if isinstance(n, dict)] if isinstance(notes, list) else []
         if not all(isinstance(n.get("text", ""), str) for n in t["notes"]):
@@ -502,6 +505,11 @@ def yolo_active(task):
     return bool(task.get("yolo")) and task.get("state") not in ("review", "done")
 
 
+def yolo_stop(task):
+    """A task YOLO stops before counts until it goes to review, like a YOLO task."""
+    return bool(task.get("yolo_before")) and task.get("state") not in ("review", "done")
+
+
 def yolo_cover(board):
     """Map task ID (upper case) -> ID of the YOLO task covering it.
 
@@ -512,19 +520,30 @@ def yolo_cover(board):
     stays a proposal until a human approves it.
     Only the last YOLO task of a chain goes to review: a YOLO task that another
     one depends on is covered by it like the rest of the chain.
+    A task with `yolo_before` covers what it depends on in the same way, and no
+    chain covers it, so agents stop before it until the human says otherwise.
     """
     tasks = task_map(board)
-    active = [t for t in board["tasks"] if yolo_active(t)]
-    reach = [(t, _upstream(tasks, t)) for t in active]
-    inside = set().union(*(up for _, up in reach))
+    stops = [t for t in board["tasks"] if yolo_stop(t)]
+    out = {t["id"].upper() for t in stops}
+    reach = [(t, _upstream(tasks, t)) for t in board["tasks"] if yolo_active(t) and t["id"].upper() not in out]
+    held = [(t, _upstream(tasks, t)) for t in stops]
+    inside = set().union(*(up for _, up in reach + held))
     cover = {}
     for t, up in reach:
         if t["id"].upper() in inside:
             continue
         cover.setdefault(t["id"].upper(), t["id"])
-        for k in up:
+        for k in up - out:
+            cover.setdefault(k, t["id"])
+    for t, up in held:
+        for k in up - out:
             cover.setdefault(k, t["id"])
     return cover
+
+
+def unfinished_before(tasks, task):
+    return any(d and d["state"] != "done" for d in map(tasks.get, _upstream(tasks, task)))
 
 
 def _upstream(tasks, task):
@@ -652,6 +671,14 @@ def add_note(task, text, by):
     if not text:
         raise KanvasError("Note text is empty")
     task.setdefault("notes", []).append({"at": now_iso(), "by": by, "text": text})
+
+
+def started_by(task):
+    """Who started the task's current run: an agent, "human" for a start in the board, or None for a run started
+    before Kanvas recorded it (mirrored in kanvas.html)."""
+    started = task.get("started")
+    by = started.get("by") if isinstance(started, dict) else None
+    return by if isinstance(by, str) and by else None
 
 
 QUESTION = "Question:"
@@ -849,6 +876,8 @@ def id_width(tasks):
 
 
 def yolo_mark(task, cover):
+    if yolo_stop(task):
+        return "  (YOLO stops here)" if task["state"] != "doing" else ""
     return "  (YOLO)" if cover and task["state"] in ("todo", "doing") and task["id"].upper() in cover else ""
 
 
@@ -867,6 +896,23 @@ def changes_mark(task, cover):
     return f"  (changes requested: {_gist(change_text(r))})" if r else ""
 
 
+def started_line(task):
+    by = started_by(task) if task["state"] in ("doing", "review", "done") else None
+    if not by:
+        return ""
+    at = task["started"].get("at")
+    when = f" {_when(at)}" if isinstance(at, str) and at else ""
+    if by == "human" and task["state"] == "doing":
+        return (f", started by the human in the board{when}; if they ask you to work on it, "
+                f"`{command_line('start ' + task['id'])}` takes it over")
+    return f", started by {'the human' if by == 'human' else by}{when}"
+
+
+def started_mark(task):
+    by = started_by(task) if task["state"] == "doing" else None
+    return f"  (started by {'the human' if by == 'human' else by})" if by else ""
+
+
 def print_rows(rows, tasks_by_id, indent="  ", show_state=True, cover=None):
     w = id_width(rows)
     for t in rows:
@@ -878,7 +924,7 @@ def print_task(board, task):
     tasks = task_map(board)
     cover = yolo_cover(board)
     print(f"{task['id']}  {task['title']}")
-    print(f"State:  {view_state(task, tasks)}")
+    print(f"State:  {view_state(task, tasks)}{started_line(task)}")
     if q := open_question(task):
         print(f"Waits:  for the human to reply to the question {q.get('by') or 'agent'} asked; the next note ends the wait")
     if changes_mark(task, cover):
@@ -888,13 +934,17 @@ def print_task(board, task):
     if task.get("by"):
         print(f"By:     {task['by']}" + (f", {task['at']}" if task.get("at") else ""))
     via = cover.get(task["id"].upper())
-    if via and task["state"] == "proposed":
-        print(f"YOLO:   joins the chain of {via} once a human approves it")
+    before = bool(via) and yolo_stop(tasks[via.upper()])
+    if yolo_stop(task) and task["state"] != "doing":
+        print("YOLO:   stops here: YOLO covers what this task depends on; start this task only when the human asks you to")
+    elif via and task["state"] == "proposed":
+        print(f"YOLO:   joins the chain {'before' if before else 'of'} {via} once a human approves it")
     elif via and task["state"] not in ("review", "done"):
         if via == task["id"]:
             print("YOLO:   set on this task; you may start it without approval, and finishing sends it to review")
         else:
-            print(f"YOLO:   through {via}; you may start it without approval, and finishing marks it done (no review)")
+            chain = f"up to {via}, where it stops" if before else f"through {via}"
+            print(f"YOLO:   {chain}; you may start it without approval, and finishing marks it done (no review)")
     if task.get("deps"):
         print("Depends on:")
         for dep in task["deps"]:
@@ -1026,6 +1076,11 @@ def cmd_status(args):
         names = ", ".join(yolo)
         print(f"YOLO on {names}: tasks marked (YOLO) need no approval and finishing them marks them done; "
               f"{names} {'itself goes' if len(yolo) == 1 else 'themselves go'} to review.")
+    stops = [t["id"] for t in board["tasks"] if yolo_stop(t) and t["state"] != "doing" and unfinished_before(tasks, t)]
+    if stops:
+        names = ", ".join(stops)
+        print(f"YOLO before {names}: tasks marked (YOLO) need no approval and finishing them marks them done; "
+              f"YOLO stops before {names}, so stop there and tell the human.")
     sections = (
         ("doing", "Doing"),
         ("review", "Waiting for human review"),
@@ -1043,7 +1098,7 @@ def cmd_status(args):
             line = f"  {t['id']:<{w}}  {t['title']}"
             if key == "blocked":
                 line += f"  (waiting on {', '.join(unmet_deps(t, tasks))})"
-            line += yolo_mark(t, cover) + waiting_mark(t) + changes_mark(t, cover)
+            line += started_mark(t) + yolo_mark(t, cover) + waiting_mark(t) + changes_mark(t, cover)
             print(line)
     errors, warnings = problems(board)
     if errors or warnings:
@@ -1151,17 +1206,21 @@ def cmd_start(args):
         tasks = task_map(board)
         t = find_task(board, args.id)
         vs = view_state(t, tasks)
+        # The human starts tasks in the board when they mean to do them; an agent they ask to do one takes it over.
+        took = vs == "doing" and started_by(t) == "human"
         if vs == "blocked":
             raise KanvasError(f"{t['id']} is blocked by unfinished {', '.join(unmet_deps(t, tasks))}")
-        if vs != "todo":
-            raise KanvasError(f"{t['id']} cannot be started: {STATE_HINTS[vs]}")
+        if vs != "todo" and not took:
+            by = started_by(t) if vs == "doing" else None
+            raise KanvasError(f"{t['id']} cannot be started: {STATE_HINTS[vs]}" + (f" (started by {by})" if by else ""))
         t["state"] = "doing"
+        t["started"] = {"at": now_iso(), "by": actor(args)}
         if note:
             add_note(t, note, actor(args))
-        return board, t
+        return board, t, took
 
-    board, t = mutate(path, op)
-    print(f"Started {t['id']} (todo -> doing)\n")
+    board, t, took = mutate(path, op)
+    print(f"Took over {t['id']}, which the human started in the board\n" if took else f"Started {t['id']} (todo -> doing)\n")
     print_task(board, t)
 
 
@@ -1181,11 +1240,18 @@ def cmd_finish(args):
         add_note(t, summary, actor(args))
         via = yolo_cover(board).get(t["id"].upper())
         t["state"] = "done" if via and via.upper() != t["id"].upper() else "review"
-        return t, via
+        tasks = task_map(board)
+        reached = [s["id"] for s in board["tasks"] if yolo_stop(s) and s["state"] != "doing"
+                   and t["id"].upper() in _upstream(tasks, s) and not unfinished_before(tasks, s)]
+        return t, via, yolo_stop(tasks[via.upper()]) if via else False, reached
 
-    t, via = mutate(path, op)
+    t, via, before, reached = mutate(path, op)
     if t["state"] == "done":
-        print(f"Finished {t['id']} (doing -> done). YOLO covers it through {via}, so it skips review.")
+        print(f"Finished {t['id']} (doing -> done). YOLO covers it {'before' if before else 'through'} {via}, so it skips review.")
+        if reached:
+            names, one = ", ".join(reached), len(reached) == 1
+            print(f"Everything {names} {'depends' if one else 'depend'} on is done, and YOLO stops before {'it' if one else 'them'}: "
+                  f"stop here and tell the human.")
     elif via:
         print(f"Finished {t['id']} (doing -> review). YOLO is set on it, so a human reviews it; its YOLO chain is complete.")
     else:
@@ -1201,6 +1267,7 @@ def cmd_pause(args):
         if t["state"] != "doing":
             raise KanvasError(f"{t['id']} is {view_state(t, task_map(board))}; only tasks in progress can be paused")
         t["state"] = "todo"
+        t.pop("started", None)
         if note:
             add_note(t, note, actor(args))
         return t
@@ -3055,7 +3122,7 @@ def build_parser():
     add("blocked", cmd_blocked, "blocked tasks and what they wait on")
     add("check", cmd_check, "validate the board (exit code 1 on errors)")
 
-    p = add("start", cmd_start, "start a ready task (todo -> doing)")
+    p = add("start", cmd_start, "start a ready task (todo -> doing), or take over one the human started in the board")
     p.add_argument("id")
     p.add_argument("-m", "--message", help="optional note, e.g. your plan")
     text_sources(p, "note")

@@ -208,6 +208,9 @@ class FormatTests(unittest.TestCase):
                  "numbers": [1.0, -0.0, 1e21, 1e-7, 0.1, 2 ** 53 + 1, 10 ** 30, 123.456, 5e-324]},
                 {"id": "G-02", "title": "Lone \ud800 surrogate", "state": None, "deps": ["G-01"], "yolo": 0,
                  "notes": [{"at": "2026-10-21T09:00:00Z", "by": "codex", "text": "x", "4": 4}]},
+                {"yolo_before": "yes", "started": {"by": "human", "at": "2026-10-21T09:00:00Z", "2": 2}, "id": "G-03", "title": "Started"},
+                {"id": "G-04", "title": "Odd records", "yolo_before": 0, "started": [], "zzz": 1},
+                {"id": "G-05", "title": "", "started": "", "yolo_before": None},
             ],
         }))
 
@@ -1189,6 +1192,18 @@ class CardLabelTests(unittest.TestCase):
         self.assertEqual(names["FE-04"], "FE-04 Dark mode, To do")
         self.assertEqual(names["RS-01"], "RS-01 Compare weather APIs, Done")
 
+    def test_a_task_in_progress_is_named_by_who_started_it(self):
+        with open(os.path.join(ROOT, "examples", "sample.json"), encoding="utf-8") as f:
+            b = json.load(f)
+        t = next(t for t in b["tasks"] if t["id"] == "BE-03")
+        t["started"] = {"at": "2026-10-20T08:00:00Z", "by": "claude"}
+        t["notes"].append({"by": "human", "at": "2026-10-20T10:00:00Z", "text": "Use the cached list"})
+        code = ("const t = normalize(input).tasks.find((t) => t.id === 'BE-03');\n"
+                "process.stdout.write(JSON.stringify([cardLabel(t, 'doing', []), worker(t)]));")
+        label, w = json.loads(run_html_js(self, code, json.dumps(b), [("function cardLabel(", "\nfunction cardFoot(")]))
+        self.assertEqual(label, "BE-03 City search endpoint, Doing, claude")
+        self.assertEqual((w["by"], w["at"]), ("claude", "2026-10-20T10:00:00Z"))
+
 
 class WorkflowTests(TempBoard):
     def test_status_lists_what_matters(self):
@@ -1229,6 +1244,65 @@ class WorkflowTests(TempBoard):
         t = self.get("DV-02")
         self.assertEqual(t["state"], "todo")
         self.assertEqual([n["text"] for n in t["notes"]], ["Plan: write the parser first", "Waiting for an API key"])
+        self.assertNotIn("started", t)
+
+    def test_start_records_who_started_the_task(self):
+        self.run_cli("start", "DV-02", "--as", "codex")
+        t = self.get("DV-02")
+        self.assertEqual(t["started"]["by"], "codex")
+        self.assertRegex(t["started"]["at"], r"\A\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ\Z")
+        self.assertEqual(list(json.loads(self.raw())["tasks"][1])[-1], "started")
+        self.assertEqual(t["notes"], [])
+        self.assertIn("State:  doing, started by codex 20", self.run_cli("show", "DV-02")[1])
+        self.assertIn("DV-02  Task DV-02  (started by codex)", self.run_cli("status")[1])
+        self.assertIn("already in progress (started by codex)", self.fails("start", "DV-02", "--as", "claude"))
+        self.run_cli("finish", "DV-02", "--as", "codex", "-m", "Parser done")
+        self.assertEqual(self.get("DV-02")["started"], t["started"])
+        self.assertIn("State:  review, started by codex", self.run_cli("show", "DV-02")[1])
+
+    def test_an_agent_takes_over_a_task_the_human_started_in_the_board(self):
+        board = self.board()
+        t = kanvas.find_task(board, "DV-02")
+        t.update(state="doing", started={"at": "2026-10-30T09:00:00Z", "by": "human"},
+                 notes=[{"at": "2026-10-30T09:00:00Z", "by": "human", "text": "Started in the board."}])
+        write_board(self.path, board)
+        _, out, _ = self.run_cli("show", "DV-02")
+        self.assertIn("State:  doing, started by the human in the board 2026-10-30 09:00:00 UTC; if they ask you to work on it,", out)
+        self.assertIn("DV-02  Task DV-02  (started by the human)", self.run_cli("status")[1])
+        _, out, _ = self.run_cli("start", "DV-02", "--as", "claude", "-m", "Plan: finish the parser")
+        self.assertIn("Took over DV-02, which the human started in the board", out)
+        t = self.get("DV-02")
+        self.assertEqual((t["state"], t["started"]["by"]), ("doing", "claude"))
+        self.assertEqual([n["by"] for n in t["notes"]], ["human", "claude"])
+        self.assertIn("already in progress (started by claude)", self.fails("start", "DV-02", "--as", "codex"))
+
+    def test_tasks_started_before_kanvas_recorded_starts_stay_with_their_agent(self):
+        board = self.board()
+        kanvas.find_task(board, "DV-02")["state"] = "doing"
+        write_board(self.path, board)
+        err = self.fails("start", "DV-02")
+        self.assertIn("already in progress", err)
+        self.assertNotIn("started by", err)
+        self.assertNotIn("started by", self.run_cli("show", "DV-02")[1])
+
+    def test_html_a_start_in_the_board_records_the_human_until_the_task_goes_back(self):
+        board = self.board()
+        board["tasks"].append(task("DV-05", "todo", "DV"))
+        code = ("const b = normalize(input), get = (id) => b.tasks.find((t) => t.id === id), seen = (id) => ({ ...get(id) }), out = [];"
+                "ops.state('DV-02', seen('DV-02'), 'doing', '', '2026-10-30T09:00:00Z')(b); out.push(structuredClone(get('DV-02')));"
+                "ops.state('DV-02', seen('DV-02'), 'review', '', '2026-10-30T10:00:00Z')(b); out.push(get('DV-02').started);"
+                "ops.state('DV-02', seen('DV-02'), 'todo', 'Not yet')(b); out.push(get('DV-02').started || null);"
+                "const start = ops.state('DV-05', seen('DV-05'), 'doing'); start(structuredClone(b));"
+                "get('DV-05').state = 'doing'; get('DV-05').started = { at: 'x', by: 'codex' };"
+                "start(b); out.push([get('DV-05').started, get('DV-05').notes.length]);"
+                "process.stdout.write(JSON.stringify(out));")
+        sections = [("function mustFind(", "\n// ----"), ("function inlineMd(", "\n// ----")]
+        started, review, back, replay = json.loads(run_html_js(self, code, json.dumps(board), sections))
+        self.assertEqual((started["state"], started["started"]), ("doing", {"at": "2026-10-30T09:00:00Z", "by": "human"}))
+        self.assertEqual([(n["by"], n["text"]) for n in started["notes"]], [("human", "Started in the board.")])
+        self.assertEqual(review, started["started"])
+        self.assertIsNone(back)
+        self.assertEqual(replay, [{"at": "x", "by": "codex"}, 0])
 
     def test_author_comes_from_as_or_environment(self):
         self.run_cli("note", "DV-02", "from env", env={"KANVAS_AGENT": "codex"})
@@ -1341,7 +1415,7 @@ class QuestionTests(TempBoard):
         self.assertIn("DV-02 now shows the human that you wait for their reply", out)
         last = self.get("DV-02")["notes"][-1]
         self.assertEqual((last["by"], last["text"]), ("claude", "Question: SQLite or Postgres?"))
-        self.assertIn("DV-02  Task DV-02  (waiting for the human: SQLite or Postgres?)", self.run_cli("status")[1])
+        self.assertIn("DV-02  Task DV-02  (started by claude)  (waiting for the human: SQLite or Postgres?)", self.run_cli("status")[1])
         self.assertIn("Waits:  for the human to reply to the question claude asked", self.run_cli("show", "DV-02")[1])
         _, out, _ = self.run_cli("note", "DV-02", "--as", "claude", "SQLite, the human said")
         self.assertIn("DV-02 no longer waits for the human.", out)
@@ -1548,6 +1622,82 @@ class YoloTests(TempBoard):
         self.assertEqual(seen, ["proposed", "blocked", "blocked", "proposed", "proposed", "proposed", "proposed"])
         # Y-01 was linked in before (by an agent) and stays proposed; Y-07 is outside the chain.
         self.assertEqual(after, ["proposed", "todo", "todo", "todo", "todo", "todo", "proposed", "todo"])
+
+    def test_agents_stop_before_a_task_marked_for_it(self):
+        board = self.board()
+        t = kanvas.find_task(board, "DV-03")
+        del t["yolo"]
+        t["yolo_before"] = True
+        write_board(self.path, board)
+        self.assertEqual(list(json.loads(self.raw())["tasks"][2])[-1], "yolo_before")
+        _, out, _ = self.run_cli("status")
+        self.assertIn("YOLO before DV-03: tasks marked (YOLO) need no approval", out)
+        self.assertIn("DV-03  Task DV-03  (waiting on DV-02)  (YOLO stops here)", out)
+        self.assertIn("YOLO:   up to DV-03, where it stops; you may start it", self.run_cli("show", "DV-02")[1])
+        self.assertIn("YOLO:   stops here: YOLO covers what this task depends on; start this task only when the human asks you to",
+                      self.run_cli("show", "DV-03")[1])
+        self.run_cli("start", "DV-02")
+        _, out, _ = self.run_cli("finish", "DV-02", "-m", "Parser done")
+        self.assertIn("YOLO covers it before DV-03, so it skips review.", out)
+        self.assertIn("Everything DV-03 depends on is done, and YOLO stops before it: stop here and tell the human.", out)
+        self.assertEqual(self.get("DV-02")["state"], "done")
+        _, out, _ = self.run_cli("ready")
+        self.assertEqual(out.splitlines(), ["DV-03  Task DV-03  (YOLO stops here)", "DV-05  Task DV-05"])
+        self.assertNotIn("YOLO before", self.run_cli("status")[1])
+        # When the human asks an agent to do it after all, it still comes back for review.
+        self.run_cli("start", "DV-03")
+        self.assertNotIn("stops here", self.run_cli("show", "DV-03")[1])
+        self.run_cli("finish", "DV-03", "-m", "Feature done")
+        self.assertEqual(self.get("DV-03")["state"], "review")
+
+    def test_a_task_yolo_stops_before_inside_a_chain_goes_to_review(self):
+        board = self.board()
+        kanvas.find_task(board, "DV-02")["yolo_before"] = True
+        write_board(self.path, board)
+        self.assertEqual(kanvas.yolo_cover(self.board()), {"DV-03": "DV-03", "DV-01": "DV-03"})
+        self.assertIn("DV-02  Task DV-02  (YOLO stops here)", self.run_cli("ready")[1])
+        self.run_cli("start", "DV-02")
+        self.run_cli("finish", "DV-02", "-m", "Parser done")
+        self.assertEqual(self.get("DV-02")["state"], "review")
+        board = self.board()
+        kanvas.find_task(board, "DV-02")["state"] = "done"
+        write_board(self.path, board)
+        self.assertIn("DV-03  Task DV-03  (YOLO)", self.run_cli("ready")[1])
+
+    def test_html_yolo_cover_with_stops_matches_python(self):
+        board = kanvas.new_board()
+        board["tasks"] = [task("S-01"), task("S-02", deps=["S-01"], yolo_before=True), task("S-03", deps=["S-02"]),
+                          task("S-04", deps=["S-03"], yolo=True), task("S-05"), task("S-06", deps=["S-05"], yolo_before=True),
+                          task("S-07", "review", deps=["S-05"], yolo_before=True), task("S-08", deps=["S-06"], yolo_before=1),
+                          task("S-09", deps=["S-01"], yolo=True, yolo_before=True)]
+        out = run_html_js(self, "process.stdout.write(JSON.stringify(Object.fromEntries(yoloCoverIn(normalize(input)))));", json.dumps(board))
+        cover = kanvas.yolo_cover(kanvas.parse_board(json.dumps(board)))
+        self.assertEqual(json.loads(out), cover)
+        self.assertEqual(cover, {"S-04": "S-04", "S-03": "S-04", "S-01": "S-04", "S-05": "S-06"})
+
+    def test_html_yolo_switches_between_doing_a_task_and_stopping_before_it(self):
+        board = kanvas.new_board()
+        board["tasks"] = [task("W-01", "proposed"), task("W-02", "proposed", deps=["W-01"]), task("W-03", "proposed", deps=["W-02"], yolo_before=True),
+                          task("W-04", "proposed", deps=["W-03"], yolo=True), task("W-05", "proposed", deps=["W-04"])]
+        steps = [("W-05", "before"), ("W-02", "before"), ("W-02", "on"), ("W-03", "on"), ("W-05", "on"), ("W-05", "off")]
+        code = ("const b = normalize(input), out = [];"
+                f"for (const [id, mode] of {json.dumps(steps)}) {{ ops.yolo(id, mode)(b);"
+                "  out.push(b.tasks.map((t) => `${t.state[0]}${t.yolo ? 'Y' : ''}${t.yolo_before ? 'S' : ''}`).join(' ')); }"
+                "process.stdout.write(JSON.stringify(out));")
+        sections = [("function mustFind(", "\n// ----"), ("function inlineMd(", "\n// ----")]
+        out = json.loads(run_html_js(self, code, json.dumps(board), sections))
+        self.assertEqual(out, [
+            # YOLO before W-05 approves what it depends on, still stops before W-03, and takes over W-04's YOLO.
+            "t t pS t pS",
+            # Stopping before W-02 takes it out of the chain and changes nothing else.
+            "t tS pS t pS",
+            "t t pS t pS",
+            # Doing W-03 too approves it, as a link into the chain would.
+            "t t t t pS",
+            # YOLO up to W-05 approves it, and agents do it too.
+            "t t t t tY",
+            "t t t t t",
+        ])
 
 
 class ProposalTests(TempBoard):

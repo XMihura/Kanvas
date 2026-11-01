@@ -363,6 +363,60 @@ class BrowserSmokeTests(unittest.TestCase):
                    timeout=5)
         self.assertEqual(self.page.logged(), [])
 
+    def test_a_task_started_in_the_board_names_the_human_until_an_agent_takes_it_over(self):
+        self.load()
+        self.open_task("FE-04")
+        self.page.js("document.querySelector('#panel .now-actions button.primary').click()")
+        task = lambda: kanvas.find_task(kanvas.load_board(self.path), "FE-04")
+        self.wait_for("the start in kanvas.json", lambda: task()["state"] == "doing")
+        self.assertEqual(task()["started"]["by"], "human")
+        self.assertEqual(self.notes("FE-04"), ["Started in the board."])
+        foot = "document.querySelector('.card[data-id=\"FE-04\"] .card-foot')"
+        self.until("the human on the card", f"{foot}.innerText.includes('human') && !{foot}.querySelector('.live')")
+        self.until("the hint to hand it over", "document.querySelector('#panel .now').innerText.includes('You started it')")
+
+        self.cli("start", "FE-04", "-m", "Plan: add the toggle")
+        self.until("the agent on the card", f"{foot}.innerText.includes('smoke-test') && !!{foot}.querySelector('.live')")
+        self.until("the panel without the hint", "!document.querySelector('#panel .now').innerText.includes('You started it')")
+        self.assertEqual(self.page.logged(), [])
+
+    def card_menu(self, tid):
+        """Right-clicks the card of `tid` and returns its menu's text."""
+        card = f"document.querySelector('.card[data-id={json.dumps(tid)}]')"
+        self.page.js(f"""(() => {{ const r = {card}.getBoundingClientRect();
+            {card}.dispatchEvent(new MouseEvent('contextmenu', {{ bubbles: true, cancelable: true, clientX: r.left + 20, clientY: r.top + 10 }})); }})()""")
+        return self.until(f"the menu of {tid}", "document.querySelector('.ctx-menu')?.innerText")
+
+    def click_in_menu(self, text):
+        self.page.js(f"[...document.querySelectorAll('.ctx-menu button')].find((b) => b.innerText.includes({json.dumps(text)})).click()")
+
+    def test_the_card_menu_makes_yolo_stop_before_a_task_of_its_chain_and_do_it_again(self):
+        self.load()
+        self.assertIn("YOLO up to here…", self.card_menu("LN-02"))
+        self.click_in_menu("YOLO up to here")
+        self.until("the YOLO dialog", "!!document.querySelector('dialog.dlg .yolo-choices input[value=on]:checked')")
+        self.page.js("document.querySelector('dialog.dlg button[value=ok]').click()")
+        board = lambda: kanvas.load_board(self.path)
+        self.wait_for("YOLO in kanvas.json", lambda: kanvas.find_task(board(), "LN-02").get("yolo"))
+
+        menu = self.card_menu("FE-03")
+        self.assertIn("YOLO up to LN-02", menu)
+        pressed = "[...document.querySelectorAll('.ctx-menu .yolo-track button')].map((b) => b.innerText.trim() + ':' + b.getAttribute('aria-pressed'))"
+        self.assertEqual(self.page.js(pressed), ["Do it too:true", "Stop before:false"])
+        self.click_in_menu("Stop before")
+        self.wait_for("YOLO to stop before FE-03", lambda: kanvas.find_task(board(), "FE-03").get("yolo_before"))
+        cover = kanvas.yolo_cover(board())
+        self.assertNotIn("FE-03", cover)
+        self.assertEqual((cover["FE-02"], cover["LN-02"]), ("LN-02", "LN-02"))
+        self.until("the stop on the card", "document.querySelector('.card[data-id=\"FE-03\"]').classList.contains('yolo-stop')"
+                                           " && document.querySelector('.card[data-id=\"FE-03\"] .yolo-tag.stop')?.innerText.includes('STOP')")
+        self.card_menu("FE-03")
+        self.assertEqual(self.page.js(pressed), ["Do it too:false", "Stop before:true"])
+        self.click_in_menu("Do it too")
+        self.wait_for("FE-03 back in the chain", lambda: "yolo_before" not in kanvas.find_task(board(), "FE-03"))
+        self.assertEqual(kanvas.yolo_cover(board()).get("FE-03"), "LN-02")
+        self.assertEqual(self.page.logged(), [])
+
     def open_other_board(self):
         folder = os.path.join(self.dir, "other")
         os.mkdir(folder)

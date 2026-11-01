@@ -209,6 +209,24 @@ svg#edges { position: absolute; left: 0; top: 0; overflow: visible; pointer-even
 .yolo-mark { display: inline-flex; color: var(--yolo-mark); filter: drop-shadow(0 0 3px color-mix(in srgb, var(--yolo) 80%, transparent)); }
 .yolo-mark .icon svg { width: 13px; height: 13px; fill: currentColor; }
 .yolo-btn .icon svg, .yolo-go .icon svg { fill: currentColor; }
+/* A task YOLO stops before: the chain ends at a still, dashed ring. */
+.card.yolo-stop::after { content: ""; position: absolute; inset: -5px; border-radius: 13px; border: 2px dashed var(--yolo); pointer-events: none; }
+.yolo-tag.stop { color: var(--text); background: color-mix(in srgb, var(--yolo) 18%, var(--surface)); box-shadow: inset 0 0 0 1.5px var(--yolo); animation: none; }
+.yolo-tag.stop .icon { color: var(--yolo-mark); }
+.yolo-track > button .icon { color: var(--faint); }
+.yolo-track .icon svg, .yolo-head .icon svg, .yolo-choice .icon svg { fill: currentColor; }
+.yolo-track > button.on { background: color-mix(in srgb, var(--yolo) 16%, var(--raise)); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--yolo) 75%, transparent); }
+.yolo-track > button.on .icon, .yolo-head .icon, .yolo-choice .icon { color: var(--yolo-mark); }
+.yolo-head { display: inline-flex; align-items: center; gap: 5px; font-weight: 650; color: var(--muted); }
+.yolo-head .icon svg { width: 12px; height: 12px; }
+.yolo-choices { display: flex; flex-direction: column; gap: 6px; }
+.yolo-choice { display: flex; align-items: flex-start; gap: 9px; padding: 9px 11px; border: 1px solid var(--border); border-radius: 8px; font-size: 13px; color: var(--muted); cursor: pointer; }
+.yolo-choice:hover { background: var(--surface-2); }
+.yolo-choice:has(input:checked) { border-color: var(--yolo); background: color-mix(in srgb, var(--yolo) 10%, var(--surface)); }
+.yolo-choice input { flex: none; margin: 2px 0 0; accent-color: var(--yolo-mark); }
+.yolo-choice .icon { margin-top: 1px; }
+.yolo-choice .icon svg { width: 15px; height: 15px; }
+.yolo-choice b { display: block; color: var(--text); font-weight: 650; }
 @keyframes yolo-fire { from { background-position: 0% 0; } to { background-position: 100% 0; } }
 .yolo-btn { font-weight: 650; border: 1.5px solid transparent; background: linear-gradient(var(--surface), var(--surface)) padding-box, linear-gradient(100deg, var(--y1), var(--y2), var(--y3), var(--y4)) border-box; }
 .yolo-btn:hover { border-color: transparent; background: linear-gradient(color-mix(in srgb, var(--y2) 9%, var(--surface)), color-mix(in srgb, var(--y2) 9%, var(--surface))) padding-box, linear-gradient(100deg, var(--y1), var(--y2), var(--y3), var(--y4)) border-box; }
@@ -325,10 +343,12 @@ button.yolo-go, button.yolo-go:hover { border: 0; color: var(--yolo-ink); font-w
 .now-who { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 400; color: var(--muted); white-space: nowrap; }
 .now-body { color: var(--text); }
 .now-body p { color: var(--muted); }
-.now-yolo { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--muted); }
-.now-yolo .icon { color: var(--yolo); filter: drop-shadow(0 0 3px color-mix(in srgb, var(--yolo) 60%, transparent)); }
-.now-yolo .icon svg { width: 14px; height: 14px; fill: currentColor; }
-.now-yolo button { margin-left: auto; padding: 1px 7px; font-size: 12px; }
+.now-yolo { display: flex; flex-direction: column; gap: 7px; font-size: 12.5px; color: var(--muted); }
+.now-yolo-line, .now-yolo-pick { display: flex; align-items: center; gap: 6px; }
+.now-yolo-line > .icon { color: var(--yolo); filter: drop-shadow(0 0 3px color-mix(in srgb, var(--yolo) 60%, transparent)); }
+.now-yolo-line > .icon svg { width: 14px; height: 14px; fill: currentColor; }
+:is(.now-yolo-line, .now-yolo-pick) > button { margin-left: auto; padding: 1px 7px; font-size: 12px; }
+.now-yolo-pick { padding-left: 20px; }
 .now-actions { display: flex; flex-wrap: wrap; gap: 6px; }
 .now-actions .yolo-btn:not(:first-child) { margin-left: auto; }
 .now-hint { display: flex; align-items: center; gap: 8px; font-size: 12.5px; line-height: 1.4; color: var(--muted); }
@@ -491,6 +511,10 @@ dialog.dlg[open]:has(> form > .help) { display: flex; flex-direction: column; }
 .ctx-menu .lbl .cid { margin-right: 6px; }
 .ctx-menu .sep { height: 1px; margin: 4px 3px; background: var(--border); }
 .ctx-menu .ctx-head { padding: 6px 9px 3px; font-size: 11.5px; color: var(--faint); }
+.ctx-menu .yolo-track { display: flex; margin: 3px 5px 4px; }
+.ctx-menu .yolo-track > button { flex: 1; width: auto; height: 28px; justify-content: center; gap: 6px; padding: 0 10px; font-size: 12.5px; }
+.ctx-menu .yolo-track > button.on { background: color-mix(in srgb, var(--yolo) 16%, var(--raise)); }
+.ctx-menu .yolo-track > button.on .icon { color: var(--yolo-mark); }
 .ctx-menu .lbl kbd { margin-left: 12px; float: right; }
 .ctx-menu.dpop { width: 300px; max-width: none; padding: 4px 14px 14px; }
 .dpop .d-head { margin-top: 10px; font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--faint); }
@@ -895,6 +919,7 @@ const ICONS = {
   unlink: '<path d="M9 17H7A5 5 0 0 1 7 7h2M15 7h2a5 5 0 0 1 1.5 9.8M8 12h3M3 3l18 18"/>',
   spark: '<path d="M12 3v4M12 17v4M3 12h4M17 12h4M6 6l2.5 2.5M15.5 15.5 18 18M6 18l2.5-2.5M15.5 8.5 18 6"/>',
   zap: '<path d="M13 2 4 14h7l-1 8 9-12h-7z"/>',
+  stop: '<path fill="none" d="M8.5 3h7L21 8.5v7L15.5 21h-7L3 15.5v-7z"/><path d="M8 12h8"/>',
   bell: '<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/>',
   tag: '<path d="M12.6 2.6A2 2 0 0 0 11.2 2H4a2 2 0 0 0-2 2v7.2a2 2 0 0 0 .6 1.4l8.7 8.7a2.4 2.4 0 0 0 3.4 0l6.6-6.6a2.4 2.4 0 0 0 0-3.4z"/><circle cx="7.5" cy="7.5" r="1.5" fill="currentColor" stroke="none"/>',
   chevron: '<path d="m7 10 5 5 5-5"/>',
@@ -998,7 +1023,7 @@ function normalize(b) {
     t.group = t.group || null;
     t.desc = String(t.desc || "");
     t.deps = Array.isArray(t.deps) ? t.deps.map(String) : [];
-    if (t.yolo) t.yolo = true; else delete t.yolo;
+    for (const flag of ["yolo", "yolo_before"]) if (t[flag]) t[flag] = true; else delete t[flag];
     t.notes = Array.isArray(t.notes) ? t.notes.filter(isObj) : [];
   }
   return b;
@@ -1021,7 +1046,7 @@ function canonical(b) {
   const out = { kanvas: 1, title: b.title || "" };
   out.groups = b.groups.map((g) => ordered(g, ["id", "name"], ["id", "name"]));
   out.tasks = b.tasks.map((t) => {
-    const o = ordered(t, ["id", "title", "state", "group", "deps", "yolo", "at", "by", "desc", "notes"], ["id", "title", "state"]);
+    const o = ordered(t, ["id", "title", "state", "group", "deps", "yolo", "at", "by", "desc", "notes", "started", "yolo_before"], ["id", "title", "state"]);
     if (o.notes) o.notes = o.notes.map((n) => ordered(n, ["at", "by", "edited", "text"], ["at", "by", "text"]));
     return o;
   });
@@ -1054,9 +1079,12 @@ function upstreamOf(b, id) {
 
 // A YOLO mark counts until its task goes to review (mirrors yolo_active in kanvas.py).
 const yoloActive = (t) => !!t.yolo && t.state !== "review" && t.state !== "done";
+// So does a task YOLO stops before, whose chain agents finish up to it (mirrors yolo_stop in kanvas.py).
+const yoloStop = (t) => !!t.yolo_before && t.state !== "review" && t.state !== "done";
 
 // Task key -> ID of the YOLO task covering it (mirrors yolo_cover in kanvas.py). Only the last YOLO task of a chain
-// covers it: a YOLO task that another one depends on is covered by that one.
+// covers it: a YOLO task that another one depends on is covered by that one. A task YOLO stops before covers what
+// it depends on, and no chain covers it.
 function yoloCoverIn(b) {
   const ix = indexOf(b);
   const upstream = (t) => {
@@ -1070,24 +1098,28 @@ function yoloCoverIn(b) {
     }
     return seen;
   };
-  const reach = b.tasks.filter(yoloActive).map((t) => [t, upstream(t)]);
-  const inside = new Set(reach.flatMap(([, up]) => [...up]));
-  const cover = new Map();
+  const stops = b.tasks.filter(yoloStop), out = new Set(stops.map((t) => key(t.id)));
+  const reach = b.tasks.filter((t) => yoloActive(t) && !out.has(key(t.id))).map((t) => [t, upstream(t)]);
+  const held = stops.map((t) => [t, upstream(t)]);
+  const inside = new Set([...reach, ...held].flatMap(([, up]) => [...up]));
+  const cover = new Map(), put = (k, id) => { if (!out.has(k) && !cover.has(k)) cover.set(k, id); };
   for (const [t, up] of reach) {
     if (inside.has(key(t.id))) continue;
-    for (const k of [key(t.id), ...up]) if (!cover.has(k)) cover.set(k, t.id);
+    for (const k of [key(t.id), ...up]) put(k, t.id);
   }
+  for (const [t, up] of held) for (const k of up) put(k, t.id);
   return cover;
 }
 
 // Turning YOLO on approves the chain's proposals and accepts what waits for review. The chain keeps one YOLO mark,
-// so the marks of tasks inside it go.
-function yoloOn(b, id) {
+// so the marks of tasks inside it go. With `before`, YOLO stops before the task, which keeps its state, as do the
+// other tasks in the chain that YOLO stops before.
+function yoloOn(b, id, before = false) {
   const ix = indexOf(b), t = ix.get(key(id));
-  t.yolo = true;
+  if (before) { t.yolo_before = true; delete t.yolo; } else { t.yolo = true; delete t.yolo_before; }
   for (const k of upstreamOf(b, t.id)) {
     const x = ix.get(k);
-    if (!x || x.state === "done") continue;
+    if (!x || x.state === "done" || (x === t ? before : yoloStop(x))) continue;
     if (x !== t) delete x.yolo;
     if (x.state === "proposed") x.state = "todo";
     else if (x.state === "review" && x !== t) x.state = "done";
@@ -1112,6 +1144,18 @@ function openQuestion(t) {
   return last && last.by !== "human" && String(last.text || "").startsWith(QUESTION) ? last : null;
 }
 const questionText = (n) => String(n.text || "").slice(QUESTION.length).trim();
+
+// Who started the task's current run: an agent, "human" for a start in the board, or null for a run started before
+// Kanvas recorded it (mirrors started_by in kanvas.py).
+const startedBy = (t) => (isObj(t.started) && typeof t.started.by === "string" && t.started.by) || null;
+
+// Who works on a task in progress or did it, and when they last did something: tasks started before Kanvas
+// recorded starts name the author of their last note.
+function worker(t) {
+  const last = t.notes[t.notes.length - 1], by = startedBy(t) || (last && (last.by || "?"));
+  const at = [isObj(t.started) && t.started.at, last && last.at].filter((x) => typeof x === "string" && x).sort().pop();
+  return by ? { by, at, text: last ? last.text : `Started by ${by}` } : null;
+}
 
 // The note in which the human asked for changes to a proposal, until an agent answers it: a note from an agent after
 // it answers it, and so does the task leaving proposed (mirrors change_request in kanvas.py).
@@ -2317,12 +2361,15 @@ function describeChange(a, z) {
   if (gone) return `deleting the ${gone.name} group`;
   const yolo = z.tasks.find((t) => t.yolo && A.has(key(t.id)) && !A.get(key(t.id)).yolo);
   if (yolo) return `turning on YOLO up to ${yolo.id}`;
+  const stop = z.tasks.find((t) => t.yolo_before && A.has(key(t.id)) && !A.get(key(t.id)).yolo_before);
+  if (stop) return yoloCoverIn(a).has(key(stop.id)) ? `stopping the YOLO before ${stop.id}` : `turning on YOLO before ${stop.id}`;
   const acts = new Map();
   const act = (words, id) => { if (!acts.has(words)) acts.set(words, []); if (id) acts.get(words).push(id); };
   for (const [k, t] of Z) if (!A.has(k)) act("adding %", t.id);
   for (const [k, t] of A) {
     const n = Z.get(k);
     if (!n) { act(t.state === "proposed" ? "rejecting %" : "deleting %", t.id); continue; }
+    if (t.yolo_before && !n.yolo_before) { act(yoloCoverIn(z).has(k) ? "letting agents do %" : "turning off YOLO before %", t.id); continue; }
     if (t.state !== n.state) { act(moveWords(t.state, n.state)[1], t.id); continue; }
     if (t.yolo && !n.yolo) { act("turning off YOLO on %", t.id); continue; }
     // Dependencies on tasks added or deleted by the same change come and go with them.
@@ -2482,8 +2529,12 @@ const ops = {
     if (from === "proposed" && t.state === "proposed" && state !== "proposed" && revisedSince(t, seen)) {
       throw new Error(`${t.id} was revised since you opened it; read the new version first`);
     }
+    const starts = state === "doing" && t.state !== "doing";
+    if (starts) t.started = { at, by: "human" };
+    else if (state === "todo" || state === "proposed") delete t.started;
     t.state = state;
-    if (text) addNote(t, text, at);
+    const note = text || (starts ? "Started in the board." : "");
+    if (note) addNote(t, note, at);
   },
   note: (id, text, at = nowIso()) => (b) => addNote(mustFind(b, id), text, at),
   // Notes are found by author, time and text, so an edit still finds its note after agents add more.
@@ -2533,11 +2584,19 @@ const ops = {
     if (revised.length) throw new Error(`${revised.join(", ")} ${revised.length > 1 ? "were" : "was"} revised since you looked; read the new version first`);
     for (const [t] of now) t.state = "todo";
   },
-  yolo: (id, on) => (b) => {
-    const t = mustFind(b, id);
-    if (!on) { delete t.yolo; return; }
-    const via = yoloCoverIn(b).get(key(t.id));
-    if (via && !same(via, t.id)) throw new Error(`${t.id} is already covered by YOLO on ${via}`);
+  // `mode` is "on" (agents do the task too), "before" (agents stop before it) or "off". Stopping before a task
+  // of a chain only takes it out; taking it back in approves it, as a link would.
+  yolo: (id, mode) => (b) => {
+    const t = mustFind(b, id), cover = yoloCoverIn(b), via = cover.get(key(t.id));
+    if (mode === "off") { delete t.yolo; delete t.yolo_before; return; }
+    if (mode === "before") {
+      if (via && !same(via, t.id)) { t.yolo_before = true; delete t.yolo; } else yoloOn(b, t.id, true);
+      return;
+    }
+    if (t.yolo_before) {
+      delete t.yolo_before;
+      if (yoloCoverIn(b).has(key(t.id))) { approveJoining(b, cover); return; }
+    } else if (via && !same(via, t.id)) throw new Error(`${t.id} is already covered by YOLO on ${via}`);
     yoloOn(b, t.id);
   },
   addGroup: (name, prefix) => (b) => {
@@ -2672,15 +2731,19 @@ function renderHeader() {
   $("#meter").dataset.tip = `${counts.done} of ${board.tasks.length} tasks done`;
   $("#meter").setAttribute("aria-label", $("#meter").dataset.tip);
   $("#meter-pct").textContent = `${Math.round((100 * counts.done) / total)}%`;
-  const targets = board.tasks.filter(isYoloTarget);
+  const targets = board.tasks.filter(isYoloTarget), stops = board.tasks.filter((t) => isYoloStop(t) && openBefore(t).length);
+  const ends = board.tasks.filter((t) => targets.includes(t) || stops.includes(t));
   const charged = board.tasks.filter((t) => yoloVia(t) && t.state !== "proposed").length;
   const chip = $("#yolo-chip");
-  chip.hidden = !targets.length;
-  if (targets.length) {
+  chip.hidden = !ends.length;
+  if (ends.length) {
+    const ids = (ts) => ts.map((t) => t.id).join(", ");
+    const what = andList([targets.length ? `YOLO on ${ids(targets)}` : null, stops.length ? `YOLO before ${ids(stops)}` : null].filter(Boolean));
+    const tasks = `${charged} task${charged === 1 ? "" : "s"}`;
     chip.replaceChildren(icon("zap"), h("span", { class: "lbl" }, "YOLO"), h("b", {}, charged));
-    chip.dataset.tip = `YOLO on ${targets.map((t) => t.id).join(", ")}: agents take on ${charged} task${charged > 1 ? "s" : ""} without approval and send ${targets.length > 1 ? "these" : "it"} to you for review. Click to open ${targets.length > 1 ? "them one by one" : "it"}.`;
-    chip.setAttribute("aria-label", `YOLO on ${targets.map((t) => t.id).join(", ")}: ${charged} task${charged > 1 ? "s" : ""} without approval`);
-    chip.onclick = () => { const i = targets.findIndex((t) => same(t.id, ui.selected)); select(targets[(i + 1) % targets.length].id); };
+    chip.dataset.tip = `${what}: agents take on ${tasks} without approval${targets.length ? ` and send ${targets.length > 1 ? "these" : "it"} to you for review` : ""}${stops.length ? `, and stop before ${ids(stops)} until you say so` : ""}. Click to open ${ends.length > 1 ? "them one by one" : "it"}.`;
+    chip.setAttribute("aria-label", `${what}: ${tasks} without approval`);
+    chip.onclick = () => { const i = ends.findIndex((t) => same(t.id, ui.selected)); select(ends[(i + 1) % ends.length].id); };
   }
   for (const v of ["graph", "board"]) {
     const btn = $(`#view-${v}`);
@@ -2720,13 +2783,13 @@ const agentMark = (by) => h("span", { class: "agent", style: `--a:${by === "huma
 
 // What a screen reader says for a card: its ID and title, its state, and the agent or the tasks its foot names.
 function cardLabel(t, vs, waits) {
-  const q = openQuestion(t), last = t.notes[t.notes.length - 1];
-  const who = q ? q.by : vs === "blocked" ? `waiting on ${waits.join(", ")}` : last && (vs === "doing" || vs === "review") ? last.by : vs === "proposed" ? t.by : null;
+  const q = openQuestion(t), w = vs === "doing" || vs === "review" ? worker(t) : null;
+  const who = q ? q.by : vs === "blocked" ? `waiting on ${waits.join(", ")}` : w ? w.by : vs === "proposed" ? t.by : null;
   return compact(`${t.id} ${t.title}`, q ? "Waiting for you" : LABEL[vs], who || null).join(", ");
 }
 
 function cardFoot(t) {
-  const vs = vstate(t), notes = t.notes.length, last = t.notes[notes - 1], q = openQuestion(t);
+  const vs = vstate(t), notes = t.notes.length, q = openQuestion(t), w = vs === "doing" || vs === "review" ? worker(t) : null;
   let left = null;
   if (q) {
     const by = q.by || "?", text = questionText(q);
@@ -2734,9 +2797,8 @@ function cardFoot(t) {
   } else if (vs === "blocked") {
     const waits = unmet(t);
     left = h("span", { class: "grow", title: `Waiting on ${waits.join(", ")}` }, icon("lock"), ` ${waits[0]}${waits.length > 1 ? ` +${waits.length - 1}` : ""}`);
-  } else if (last && (vs === "doing" || vs === "review")) {
-    const by = last.by || "?";
-    left = h("span", { class: "grow who", title: last.text }, vs === "doing" ? h("i", { class: "live" }) : null, agentMark(by), h("span", { class: "t" }, `${by} · ${ago(last.at)}`));
+  } else if (w) {
+    left = h("span", { class: "grow who", title: w.text }, vs === "doing" && w.by !== "human" ? h("i", { class: "live" }) : null, agentMark(w.by), h("span", { class: "t" }, w.at ? `${w.by} · ${ago(w.at)}` : w.by));
   } else if (vs === "proposed" && t.by) {
     left = h("span", { class: "grow who", title: `Proposed by ${t.by}` }, agentMark(t.by), h("span", { class: "t" }, t.at ? `${t.by} · ${ago(t.at)}` : t.by));
   } else if (t.deps.length) {
@@ -2748,18 +2810,27 @@ function cardFoot(t) {
 }
 
 const isYoloTarget = (t) => yoloActive(t) && same(yoloVia(t), t.id);
+// A task YOLO stops before shows it until someone starts it.
+const isYoloStop = (t) => yoloStop(t) && t.state !== "doing";
+const openBefore = (t) => [...upstreamOf(board, t.id)].map(get).filter((x) => x && x.state !== "done" && !same(x.id, t.id));
+// The chain a task YOLO stops before sits in: the YOLO further along that would cover the task otherwise.
+const yoloHolder = (t) => board.tasks.find((x) => !same(x.id, t.id) && (isYoloTarget(x) || yoloStop(x)) && upstreamOf(board, x.id).has(key(t.id))) || null;
+const yoloEnd = (id) => (yoloStop(get(id) || {}) ? `YOLO before ${id}` : `YOLO up to ${id}`);
 
 function yoloTag(t) {
+  if (isYoloStop(t)) {
+    return h("span", { class: "yolo-tag stop", title: openBefore(t).length ? "YOLO stops here: agents finish everything this task depends on without approval or review, then wait for you" : "YOLO stops here: agents start this task only when you say so" }, icon("stop"), "STOP");
+  }
   if (t.yolo && t.state !== "done" && (!yoloActive(t) || isYoloTarget(t))) {
     return h("span", { class: "yolo-tag", title: yoloActive(t) ? "YOLO: agents finish everything this task depends on without approval or review, then this task, which comes to you for review" : "YOLO chain complete: this task waits for your review" }, icon("zap"), "YOLO");
   }
   const via = yoloVia(t);
-  return via ? h("span", { class: "yolo-mark", title: t.state === "proposed" ? `In the YOLO chain of ${via}: once you approve it, no review needed` : `Covered by YOLO on ${via}: no approval or review needed` }, icon("zap")) : null;
+  return via ? h("span", { class: "yolo-mark", title: t.state === "proposed" ? `In the ${yoloEnd(via)}: once you approve it, no review needed` : `Covered by ${yoloEnd(via)}: no approval or review needed` }, icon("zap")) : null;
 }
 
 function fillCard(el, t) {
   const vs = vstate(t), asking = !!openQuestion(t);
-  el.className = `card s-${vs}${asking ? " asking" : ""}${same(ui.selected, t.id) ? " sel" : ""}${multi.has(key(t.id)) ? " multi-on" : ""}${isYoloTarget(t) ? " yolo" : ""}${["enter", "flash", "moving", "zap"].filter((c) => el.classList.contains(c)).map((c) => ` ${c}`).join("")}`;
+  el.className = `card s-${vs}${asking ? " asking" : ""}${same(ui.selected, t.id) ? " sel" : ""}${multi.has(key(t.id)) ? " multi-on" : ""}${isYoloTarget(t) ? " yolo" : isYoloStop(t) ? " yolo-stop" : ""}${["enter", "flash", "moving", "zap"].filter((c) => el.classList.contains(c)).map((c) => ` ${c}`).join("")}`;
   el.dataset.id = t.id;
   el.setAttribute("role", "option");
   el.setAttribute("aria-label", cardLabel(t, vs, unmet(t)));
@@ -2835,7 +2906,7 @@ function renderGraph() {
   for (const e of L.edges) {
     const dep = IX.get(e.from), t = IX.get(e.to);
     const cls = dep.state === "done" ? "met" : "open";
-    const m = yoloVia(dep) && yoloVia(t) ? "yolo" : dep.state === "doing" && !openQuestion(dep) ? "live" : cls;
+    const m = yoloVia(dep) && (yoloVia(t) || isYoloStop(t)) ? "yolo" : dep.state === "doing" && !openQuestion(dep) ? "live" : cls;
     const imp = e.implied ? (same(ui.selected, dep.id) || same(ui.selected, t.id) ? " implied shown" : " implied") : "";
     const path = curvePath(e.segs);
     const ends = `data-from="${escHtml(dep.id)}" data-to="${escHtml(t.id)}"`;
@@ -3741,40 +3812,81 @@ function stateMoves(t) {
   }
 }
 
-function yoloAction(t) {
-  if (t.yolo) return { label: "Turn off YOLO", icon: "zap", run: () => toggleYolo(t) };
-  if (t.state === "review" || t.state === "done") return null;
-  const via = yoloVia(t);
-  if (via) return { head: `${t.state === "proposed" ? "In the YOLO chain of" : "Covered by YOLO on"} ${via}` };
-  return { label: "YOLO up to here…", icon: "zap", run: () => toggleYolo(t) };
+// Agents do every task of a YOLO chain, and stop before the tasks marked for that. Where a task of a chain stands:
+// `chain` names the task the chain ends with, `own` says the chain is the task's own, and `canStop` that something
+// before the task is left for the agents. null for tasks outside a chain.
+function yoloSwitch(t) {
+  const stop = isYoloStop(t), target = isYoloTarget(t), via = yoloVia(t);
+  if (!stop && !target && !(via && (t.state === "proposed" || t.state === "todo"))) return null;
+  const holder = stop ? yoloHolder(t) : null, own = target || (stop && !holder);
+  return { stop, own, chain: own ? t.id : holder ? holder.id : via, canStop: stop || !own || openBefore(t).length > 0 };
 }
 
-async function toggleYolo(t) {
-  if (t.yolo) {
-    undoable(ops.yolo(t.id, false), `YOLO is off for ${t.id}`);
-    return;
-  }
+function setYolo(t, mode) {
+  return undoable(ops.yolo(t.id, mode), mode === "off" ? `YOLO is off for ${t.id}` : mode === "before" ? `YOLO stops before ${t.id}` : `Agents do ${t.id} too`);
+}
+
+// Whether YOLO does a task of its chain or stops before it, the current choice pressed.
+function yoloTrack(t, sw, picked = () => {}) {
+  const side = (mode, on, ic, label, tip) => h("button", { type: "button", class: on ? "on" : null, "aria-pressed": String(on), title: tip,
+    onclick: () => { picked(); if (!on) setYolo(t, mode); } }, icon(ic), label);
+  return h("div", { class: "track yolo-track", role: "group", "aria-label": `YOLO at ${t.id}` },
+    side("on", !sw.stop, "zap", "Do it too", sw.own ? `Agents finish everything ${t.id} depends on, then ${t.id}, and send it to you for review` : `Agents do ${t.id} without approval or review`),
+    side("before", sw.stop, "stop", "Stop before", `Agents finish everything ${t.id} depends on, then wait for you before starting ${t.id}`));
+}
+
+// The YOLO part of a task's menu.
+function yoloMenu(t) {
+  const sw = yoloSwitch(t), off = { label: "Turn off YOLO", icon: "x", run: () => setYolo(t, "off") };
+  if (sw) return [
+    { head: h("span", { class: "yolo-head" }, icon(sw.stop && sw.own ? "stop" : "zap"), yoloEnd(sw.chain)) },
+    sw.canStop ? { node: yoloTrack(t, sw, () => closeMenu(true)) } : null,
+    sw.own ? off : null,
+  ];
+  if (t.yolo) return [{ ...off, icon: "zap" }];
+  if (t.state === "review" || t.state === "done") return [];
+  const via = yoloVia(t);
+  if (via) return [{ head: `Covered by ${yoloEnd(via)}` }];
+  return [
+    { label: "YOLO up to here…", icon: "zap", run: () => startYolo(t, "on") },
+    openBefore(t).length ? { label: "YOLO before this…", icon: "stop", run: () => startYolo(t, "before") } : null,
+  ];
+}
+
+// Turns YOLO on up to `t` after saying what that does. When something before `t` is unfinished, the human chooses
+// whether agents do `t` too or stop before it.
+async function startYolo(t, mode) {
   if (!prefs.skipYoloWarning) {
-    const chain = [...upstreamOf(board, t.id)].map(get).filter((x) => x && x.state !== "done");
-    const before = chain.filter((x) => !same(x.id, t.id));
-    const inner = before.filter((x) => x.yolo).map((x) => x.id);
+    const before = openBefore(t), inner = before.filter((x) => x.yolo).map((x) => x.id);
+    const stops = before.filter(yoloStop).map((x) => x.id), agents = before.length - stops.length;
     const count = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
     const names = (ids) => (ids.length > 1 ? `${ids.slice(0, -1).join(", ")} and ${ids[ids.length - 1]}` : ids[0]);
-    const proposals = chain.filter((x) => x.state === "proposed").length, reviews = before.filter((x) => x.state === "review").length;
+    const lead = agents ? `Agents finish the ${count(agents, "unfinished task")} ${t.id} depends on without approval or review${stops.length ? `, stopping before ${names(stops)}` : ""}.`
+      : before.length ? `YOLO already stops before ${names(stops)}, which ${t.id} depends on.`
+      : `Agents may start ${t.id} without approval and send it to you for review.`;
+    const proposals = before.filter((x) => x.state === "proposed" && !yoloStop(x)).length + (!before.length && t.state === "proposed" ? 1 : 0);
+    const reviews = before.filter((x) => x.state === "review").length;
     const effects = [proposals ? `approves ${count(proposals, "proposal")}` : null, reviews ? `marks ${count(reviews, "review")} done` : null].filter(Boolean);
+    const choice = (value, ic, title, text) => h("label", { class: "yolo-choice" },
+      h("input", { type: "radio", name: "mode", value, checked: value === mode }), icon(ic), h("span", {}, h("b", {}, title), text));
     const data = await modal(`YOLO up to ${t.id}?`, [
-      h("p", {}, `${before.length ? `Agents finish the ${count(before.length, "unfinished task")} ${t.id} depends on without approval or review, then do ${t.id} and send it to you for review.` : `Agents may start ${t.id} without approval and send it to you for review.`}${inner.length ? ` This takes over the YOLO on ${names(inner)}, so only ${t.id} comes to you for review.` : ""}${effects.length ? ` This ${effects.join(" and ")} now.` : ""}`),
+      h("p", {}, `${lead}${inner.length ? ` This takes over the YOLO on ${names(inner)}.` : ""}${effects.length ? ` This ${effects.join(" and ")} now.` : ""}`),
+      before.length ? h("div", { class: "yolo-choices", role: "radiogroup", "aria-label": `YOLO at ${t.id}` },
+        choice("on", "zap", `Do ${t.id} too`, t.state === "proposed" ? "This approves it. Then it comes to you for review." : "Then it comes to you for review."),
+        choice("before", "stop", `Stop before ${t.id}`, "Agents wait for you before starting it.")) : null,
       h("label", { class: "check" }, h("input", { type: "checkbox", name: "skip" }), "Don't ask again"),
     ], { ok: [icon("zap"), "YOLO"], okClass: "yolo-go" });
     if (!data) return;
     if (data.get("skip")) { prefs.skipYoloWarning = true; savePrefs(); }
+    mode = data.get("mode") || mode;
   }
-  if (await undoable(ops.yolo(t.id, true), `YOLO is on up to ${t.id}`)) zap(t.id);
+  const said = mode === "before" ? `YOLO is on and stops before ${t.id}` : `YOLO is on up to ${t.id}`;
+  if (await undoable(ops.yolo(t.id, mode), said)) zap(t.id, mode === "before");
 }
 
-function zap(id) {
+function zap(id, before = false) {
   if (!lastLayout) return;
-  const chain = [...upstreamOf(board, id)].filter((k) => cardEls.has(k) && lastLayout.pos.has(k) && IX.get(k).state !== "done");
+  const chain = [...upstreamOf(board, id)].filter((k) => cardEls.has(k) && lastLayout.pos.has(k) && IX.get(k).state !== "done" && !(before && k === key(id)));
   const along = (k) => (lastLayout.vertical ? lastLayout.pos.get(k).y : lastLayout.pos.get(k).x);
   const start = Math.min(...chain.map(along));
   for (const k of chain) {
@@ -3968,22 +4080,33 @@ function nowCard(t, vs, ro, note) {
   const waits = unmet(t), q = note && note === openQuestion(t) ? note : null, by = q ? q.by || "the agent" : null;
   const cr = note && note === changeRequest(t) ? note : null, author = t.by && t.by !== "human" ? t.by : "the agent";
   const dismiss = () => undoable(ops.note(t.id, "Dismissed the question: no reply is coming in the chat."), "Question dismissed");
+  const say = () => h("button", { class: "say", title: "Copy", onclick: () => copy(`work on ${t.id}`) }, `work on ${t.id}`, icon("copy"));
+  const mine = vs === "doing" && startedBy(t) === "human";
   const [mark, headline, body] = q ? [icon("ask"), "Waiting for your reply", null] : cr ? [icon("edit"), "Changes requested", null] : {
     proposed: [icon("spark"), "Proposed", h("p", {}, "Approve it to make it available for work, ask for changes, or reject it.")],
     blocked: [icon("lock"), "Blocked", h("p", {}, "Starts when ", list(waits), waits.length > 1 ? " are done." : " is done.")],
-    todo: [icon("play"), "Ready to start", ro ? null : h("p", {}, "Start it yourself, or tell an agent ", h("button", { class: "say", title: "Copy", onclick: () => copy(`work on ${t.id}`) }, `work on ${t.id}`, icon("copy")))],
-    doing: [h("i", { class: "live" }), "In progress", null],
+    todo: [icon("play"), "Ready to start", ro ? null : h("p", {}, "Start it yourself, or tell an agent ", say())],
+    doing: [mine ? icon("play") : h("i", { class: "live" }), "In progress", null],
     review: [icon("check"), "Ready for your review", null],
     done: [icon("check"), "Done", null],
   }[vs];
-  const via = yoloVia(t), complete = t.yolo && t.state === "review";
-  const yolo = via || complete ? h("div", { class: "now-yolo" }, icon("zap"),
-    h("span", {}, complete ? ["YOLO chain complete.", via ? [" The YOLO chain of ", ref(via), " waits for your review."] : null]
-      : !same(via, t.id) && t.state === "proposed" ? ["In the YOLO chain of ", ref(via), ": once you approve it, agents finish it without review."]
-      : !same(via, t.id) ? ["Covered by YOLO on ", ref(via), ": no approval or review needed."]
-      : "YOLO: agents finish everything it needs, then send it to you for review."),
-    t.yolo && !ro ? h("button", { onclick: () => toggleYolo(t) }, "Turn off") : null) : null;
-  const ya = ro || editing || t.yolo || via || !["proposed", "todo", "blocked"].includes(vs) ? null : yoloAction(t);
+  const via = yoloVia(t), complete = t.yolo && t.state === "review", stop = isYoloStop(t), holder = stop ? yoloHolder(t) : null;
+  const stops = isYoloTarget(t) ? openBefore(t).filter(yoloStop).map((x) => x.id) : [];
+  const chain = (id) => [yoloStop(get(id) || {}) ? "YOLO before " : "YOLO up to ", ref(id)];
+  const sw = ro || editing ? null : yoloSwitch(t), track = sw && sw.canStop ? yoloTrack(t, sw) : null;
+  const off = !ro && (t.yolo || (sw && sw.own)) ? h("button", { onclick: () => setYolo(t, "off") }, "Turn off") : null;
+  const yolo = via || complete || stop ? h("div", { class: "now-yolo" },
+    h("div", { class: "now-yolo-line" }, icon(stop ? "stop" : "zap"),
+      h("span", {}, complete ? ["YOLO chain complete.", via ? [" The ", chain(via), " waits for your review."] : null]
+        : stop ? [openBefore(t).length ? "YOLO stops here: agents finish everything it depends on without approval or review, then wait for you." : "YOLO stops here: agents start it only when you say so.",
+          holder ? [` Once ${t.id} is done, they go on with the `, chain(holder.id), "."] : null]
+        : !same(via, t.id) && t.state === "proposed" ? ["In the ", chain(via), ": once you approve it, agents finish it without review."]
+        : !same(via, t.id) ? ["Covered by ", chain(via), ": no approval or review needed."]
+        : ["YOLO: agents finish what it needs, then send it to you for review.", stops.length ? [" On the way, they stop before ", list(stops), "."] : null]),
+      track ? null : off),
+    track ? h("div", { class: "now-yolo-pick" }, track, off) : null) : null;
+  const ya = ro || editing || t.yolo || via || stop || !["proposed", "todo", "blocked"].includes(vs) ? null
+    : { label: "YOLO up to here…", icon: "zap", run: () => startYolo(t, "on") };
   const moves = ro || editing ? [] : stateMoves(t);
   const gone = q && !ro && !editing ? h("button", { class: "dismiss", title: "No reply is coming in the chat: clear the question with a note", onclick: dismiss }, icon("x"), "Dismiss") : null;
   return h("div", { class: `now s-${q ? "ask" : vs}` },
@@ -3993,6 +4116,7 @@ function nowCard(t, vs, ro, note) {
       : body ? h("div", { class: "now-body md" }, body) : null,
     q && !editing ? h("div", { class: "now-hint" }, h("span", {}, `Reply in ${by}'s chat. This clears when ${by} carries on.`), gone) : null,
     cr && !editing ? h("div", { class: "now-hint" }, h("span", {}, `Waiting for ${author} to revise it. The next note from an agent clears the request.`)) : null,
+    mine && !q && !ro && !editing ? h("div", { class: "now-hint" }, h("span", {}, "You started it. An agent you tell to ", say(), " takes it over.")) : null,
     yolo,
     moves.length || ya ? h("div", { class: "now-actions" },
       moves.map((m) => h("button", { class: m.primary ? `primary to s-${m.to}` : m.danger ? "danger" : "", title: m.to && !m.primary ? `Moves it to ${LABEL[m.to]}` : null, onclick: m.run }, icon(m.icon), m.label)),
@@ -4947,7 +5071,8 @@ function cardMenu(t) {
     { label: picked ? "Unselect" : multi.size ? "Add to the selection" : "Select", icon: "check", run: () => toggleMulti(t.id) },
     "sep",
     ...stateMoves(t).filter((m) => !m.danger).map((m) => ({ ...m, label: m.asks ? `${m.label}…` : m.label })),
-    yoloAction(t),
+    "sep",
+    ...yoloMenu(t),
     "sep",
     { label: "New task blocked by this…", icon: "plus", run: () => newTaskDialog(t.group, { deps: [t.id] }) },
     t.state === "proposed" || t.state === "todo" ? { label: "New task that blocks this…", icon: "plus", run: () => newTaskDialog(t.group, { deps: [], blocks: [t.id] }) } : null,
