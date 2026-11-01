@@ -4936,7 +4936,7 @@ async function closeBoard() {
     last ? h("p", {}, "It is the last open board, so Kanvas stops too.") : null,
     h("p", {}, "The board file stays in your project. To open it again, run ", h("code", {}, "kanvas serve"), " in the project."),
     unsaved() ? h("p", {}, "Unsaved text in this tab will not be saved.") : null,
-  ], { ok: "Close board" });
+  ], { ok: last ? "Close board and stop Kanvas" : "Close board" });
   if (!accepted || closingBoard) return;
   closingBoard = true;
   try {
