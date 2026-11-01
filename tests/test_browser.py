@@ -363,6 +363,23 @@ class BrowserSmokeTests(unittest.TestCase):
                    timeout=5)
         self.assertEqual(self.page.logged(), [])
 
+    def test_a_task_started_in_the_board_names_the_human_until_an_agent_takes_it_over(self):
+        self.load()
+        self.open_task("FE-04")
+        self.page.js("document.querySelector('#panel .now-actions button.primary').click()")
+        task = lambda: kanvas.find_task(kanvas.load_board(self.path), "FE-04")
+        self.wait_for("the start in kanvas.json", lambda: task()["state"] == "doing")
+        self.assertEqual(task()["started"]["by"], "human")
+        self.assertEqual(self.notes("FE-04"), ["Started in the board."])
+        foot = "document.querySelector('.card[data-id=\"FE-04\"] .card-foot')"
+        self.until("the human on the card", f"{foot}.innerText.includes('human') && !{foot}.querySelector('.live')")
+        self.until("the hint to hand it over", "document.querySelector('#panel .now').innerText.includes('You started it')")
+
+        self.cli("start", "FE-04", "-m", "Plan: add the toggle")
+        self.until("the agent on the card", f"{foot}.innerText.includes('smoke-test') && !!{foot}.querySelector('.live')")
+        self.until("the panel without the hint", "!document.querySelector('#panel .now').innerText.includes('You started it')")
+        self.assertEqual(self.page.logged(), [])
+
     def open_other_board(self):
         folder = os.path.join(self.dir, "other")
         os.mkdir(folder)

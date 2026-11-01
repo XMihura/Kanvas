@@ -1021,7 +1021,7 @@ function canonical(b) {
   const out = { kanvas: 1, title: b.title || "" };
   out.groups = b.groups.map((g) => ordered(g, ["id", "name"], ["id", "name"]));
   out.tasks = b.tasks.map((t) => {
-    const o = ordered(t, ["id", "title", "state", "group", "deps", "yolo", "at", "by", "desc", "notes"], ["id", "title", "state"]);
+    const o = ordered(t, ["id", "title", "state", "group", "deps", "yolo", "at", "by", "desc", "notes", "started"], ["id", "title", "state"]);
     if (o.notes) o.notes = o.notes.map((n) => ordered(n, ["at", "by", "edited", "text"], ["at", "by", "text"]));
     return o;
   });
@@ -1112,6 +1112,18 @@ function openQuestion(t) {
   return last && last.by !== "human" && String(last.text || "").startsWith(QUESTION) ? last : null;
 }
 const questionText = (n) => String(n.text || "").slice(QUESTION.length).trim();
+
+// Who started the task's current run: an agent, "human" for a start in the board, or null for a run started before
+// Kanvas recorded it (mirrors started_by in kanvas.py).
+const startedBy = (t) => (isObj(t.started) && typeof t.started.by === "string" && t.started.by) || null;
+
+// Who works on a task in progress or did it, and when they last did something: tasks started before Kanvas
+// recorded starts name the author of their last note.
+function worker(t) {
+  const last = t.notes[t.notes.length - 1], by = startedBy(t) || (last && (last.by || "?"));
+  const at = [isObj(t.started) && t.started.at, last && last.at].filter((x) => typeof x === "string" && x).sort().pop();
+  return by ? { by, at, text: last ? last.text : `Started by ${by}` } : null;
+}
 
 // The note in which the human asked for changes to a proposal, until an agent answers it: a note from an agent after
 // it answers it, and so does the task leaving proposed (mirrors change_request in kanvas.py).
@@ -2482,6 +2494,8 @@ const ops = {
     if (from === "proposed" && t.state === "proposed" && state !== "proposed" && revisedSince(t, seen)) {
       throw new Error(`${t.id} was revised since you opened it; read the new version first`);
     }
+    if (state === "doing" && t.state !== "doing") { t.started = { at, by: "human" }; text = text || "Started in the board."; }
+    else if (state === "todo" || state === "proposed") delete t.started;
     t.state = state;
     if (text) addNote(t, text, at);
   },
@@ -2720,13 +2734,13 @@ const agentMark = (by) => h("span", { class: "agent", style: `--a:${by === "huma
 
 // What a screen reader says for a card: its ID and title, its state, and the agent or the tasks its foot names.
 function cardLabel(t, vs, waits) {
-  const q = openQuestion(t), last = t.notes[t.notes.length - 1];
-  const who = q ? q.by : vs === "blocked" ? `waiting on ${waits.join(", ")}` : last && (vs === "doing" || vs === "review") ? last.by : vs === "proposed" ? t.by : null;
+  const q = openQuestion(t), w = vs === "doing" || vs === "review" ? worker(t) : null;
+  const who = q ? q.by : vs === "blocked" ? `waiting on ${waits.join(", ")}` : w ? w.by : vs === "proposed" ? t.by : null;
   return compact(`${t.id} ${t.title}`, q ? "Waiting for you" : LABEL[vs], who || null).join(", ");
 }
 
 function cardFoot(t) {
-  const vs = vstate(t), notes = t.notes.length, last = t.notes[notes - 1], q = openQuestion(t);
+  const vs = vstate(t), notes = t.notes.length, q = openQuestion(t), w = vs === "doing" || vs === "review" ? worker(t) : null;
   let left = null;
   if (q) {
     const by = q.by || "?", text = questionText(q);
@@ -2734,9 +2748,8 @@ function cardFoot(t) {
   } else if (vs === "blocked") {
     const waits = unmet(t);
     left = h("span", { class: "grow", title: `Waiting on ${waits.join(", ")}` }, icon("lock"), ` ${waits[0]}${waits.length > 1 ? ` +${waits.length - 1}` : ""}`);
-  } else if (last && (vs === "doing" || vs === "review")) {
-    const by = last.by || "?";
-    left = h("span", { class: "grow who", title: last.text }, vs === "doing" ? h("i", { class: "live" }) : null, agentMark(by), h("span", { class: "t" }, `${by} · ${ago(last.at)}`));
+  } else if (w) {
+    left = h("span", { class: "grow who", title: w.text }, vs === "doing" && w.by !== "human" ? h("i", { class: "live" }) : null, agentMark(w.by), h("span", { class: "t" }, w.at ? `${w.by} · ${ago(w.at)}` : w.by));
   } else if (vs === "proposed" && t.by) {
     left = h("span", { class: "grow who", title: `Proposed by ${t.by}` }, agentMark(t.by), h("span", { class: "t" }, t.at ? `${t.by} · ${ago(t.at)}` : t.by));
   } else if (t.deps.length) {
@@ -3968,11 +3981,13 @@ function nowCard(t, vs, ro, note) {
   const waits = unmet(t), q = note && note === openQuestion(t) ? note : null, by = q ? q.by || "the agent" : null;
   const cr = note && note === changeRequest(t) ? note : null, author = t.by && t.by !== "human" ? t.by : "the agent";
   const dismiss = () => undoable(ops.note(t.id, "Dismissed the question: no reply is coming in the chat."), "Question dismissed");
+  const say = () => h("button", { class: "say", title: "Copy", onclick: () => copy(`work on ${t.id}`) }, `work on ${t.id}`, icon("copy"));
+  const mine = vs === "doing" && startedBy(t) === "human";
   const [mark, headline, body] = q ? [icon("ask"), "Waiting for your reply", null] : cr ? [icon("edit"), "Changes requested", null] : {
     proposed: [icon("spark"), "Proposed", h("p", {}, "Approve it to make it available for work, ask for changes, or reject it.")],
     blocked: [icon("lock"), "Blocked", h("p", {}, "Starts when ", list(waits), waits.length > 1 ? " are done." : " is done.")],
-    todo: [icon("play"), "Ready to start", ro ? null : h("p", {}, "Start it yourself, or tell an agent ", h("button", { class: "say", title: "Copy", onclick: () => copy(`work on ${t.id}`) }, `work on ${t.id}`, icon("copy")))],
-    doing: [h("i", { class: "live" }), "In progress", null],
+    todo: [icon("play"), "Ready to start", ro ? null : h("p", {}, "Start it yourself, or tell an agent ", say())],
+    doing: [mine ? icon("play") : h("i", { class: "live" }), "In progress", null],
     review: [icon("check"), "Ready for your review", null],
     done: [icon("check"), "Done", null],
   }[vs];
@@ -3993,6 +4008,7 @@ function nowCard(t, vs, ro, note) {
       : body ? h("div", { class: "now-body md" }, body) : null,
     q && !editing ? h("div", { class: "now-hint" }, h("span", {}, `Reply in ${by}'s chat. This clears when ${by} carries on.`), gone) : null,
     cr && !editing ? h("div", { class: "now-hint" }, h("span", {}, `Waiting for ${author} to revise it. The next note from an agent clears the request.`)) : null,
+    mine && !q && !ro && !editing ? h("div", { class: "now-hint" }, h("span", {}, "You started it. An agent you tell to ", say(), " takes it over.")) : null,
     yolo,
     moves.length || ya ? h("div", { class: "now-actions" },
       moves.map((m) => h("button", { class: m.primary ? `primary to s-${m.to}` : m.danger ? "danger" : "", title: m.to && !m.primary ? `Moves it to ${LABEL[m.to]}` : null, onclick: m.run }, icon(m.icon), m.label)),

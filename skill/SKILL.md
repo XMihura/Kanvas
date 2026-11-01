@@ -25,11 +25,13 @@ proposed -> todo -> doing -> review -> done
 |-------|----------------|---------|
 | proposed | you (`propose`, `batch`) | An idea waiting for human approval |
 | todo | the human | Approved. Shown as **blocked** while a dependency is unfinished |
-| doing | you (`start`) | In progress |
+| doing | you (`start`), or the human | In progress. `status` and `show` say who started it |
 | review | you (`finish`, with a summary) | Waiting for the human to check it |
 | done | the human | Accepted |
 
 You may propose tasks and groups, start ready tasks, finish or pause tasks in progress, add notes and add dependencies. Until the human approves a proposal, you may also revise it (`edit`), withdraw it (`withdraw`) or remove its dependencies (`undepend`), so rework proposals freely while you discuss a plan. Approving proposals, changing approved tasks and marking tasks done belong to the human; ask for them in the conversation.
+
+A task the human started in the board is theirs: leave it unless they ask you to work on it. Then `start ID -m "Plan: ..."` takes it over and records you as the one working on it. A task another agent started stays with that agent.
 
 The human can also ask for changes to a proposal in the board. `status` then marks it `(changes requested: ...)`, and `show ID` has the request in its notes. Revise the proposal with `edit ID`, passing `-m` with what you changed; that note answers the request, and the mark goes.
 

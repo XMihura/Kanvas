@@ -1189,6 +1189,18 @@ class CardLabelTests(unittest.TestCase):
         self.assertEqual(names["FE-04"], "FE-04 Dark mode, To do")
         self.assertEqual(names["RS-01"], "RS-01 Compare weather APIs, Done")
 
+    def test_a_task_in_progress_is_named_by_who_started_it(self):
+        with open(os.path.join(ROOT, "examples", "sample.json"), encoding="utf-8") as f:
+            b = json.load(f)
+        t = next(t for t in b["tasks"] if t["id"] == "BE-03")
+        t["started"] = {"at": "2026-10-20T08:00:00Z", "by": "claude"}
+        t["notes"].append({"by": "human", "at": "2026-10-20T10:00:00Z", "text": "Use the cached list"})
+        code = ("const t = normalize(input).tasks.find((t) => t.id === 'BE-03');\n"
+                "process.stdout.write(JSON.stringify([cardLabel(t, 'doing', []), worker(t)]));")
+        label, w = json.loads(run_html_js(self, code, json.dumps(b), [("function cardLabel(", "\nfunction cardFoot(")]))
+        self.assertEqual(label, "BE-03 City search endpoint, Doing, claude")
+        self.assertEqual((w["by"], w["at"]), ("claude", "2026-10-20T10:00:00Z"))
+
 
 class WorkflowTests(TempBoard):
     def test_status_lists_what_matters(self):
@@ -1229,6 +1241,64 @@ class WorkflowTests(TempBoard):
         t = self.get("DV-02")
         self.assertEqual(t["state"], "todo")
         self.assertEqual([n["text"] for n in t["notes"]], ["Plan: write the parser first", "Waiting for an API key"])
+        self.assertNotIn("started", t)
+
+    def test_start_records_who_started_the_task(self):
+        self.run_cli("start", "DV-02", "--as", "codex")
+        t = self.get("DV-02")
+        self.assertEqual(t["started"]["by"], "codex")
+        self.assertRegex(t["started"]["at"], r"\A\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ\Z")
+        self.assertEqual(list(json.loads(self.raw())["tasks"][1])[-1], "started")
+        self.assertEqual(t["notes"], [])
+        self.assertIn("State:  doing, started by codex 20", self.run_cli("show", "DV-02")[1])
+        self.assertIn("DV-02  Task DV-02  (started by codex)", self.run_cli("status")[1])
+        self.assertIn("already in progress (started by codex)", self.fails("start", "DV-02", "--as", "claude"))
+        self.run_cli("finish", "DV-02", "--as", "codex", "-m", "Parser done")
+        self.assertEqual(self.get("DV-02")["started"], t["started"])
+        self.assertIn("State:  review, started by codex", self.run_cli("show", "DV-02")[1])
+
+    def test_an_agent_takes_over_a_task_the_human_started_in_the_board(self):
+        board = self.board()
+        t = kanvas.find_task(board, "DV-02")
+        t.update(state="doing", started={"at": "2026-10-30T09:00:00Z", "by": "human"},
+                 notes=[{"at": "2026-10-30T09:00:00Z", "by": "human", "text": "Started in the board."}])
+        write_board(self.path, board)
+        _, out, _ = self.run_cli("show", "DV-02")
+        self.assertIn("State:  doing, started by the human in the board 2026-10-30 09:00:00 UTC; if they ask you to work on it,", out)
+        self.assertIn("DV-02  Task DV-02  (started by the human)", self.run_cli("status")[1])
+        _, out, _ = self.run_cli("start", "DV-02", "--as", "claude", "-m", "Plan: finish the parser")
+        self.assertIn("Took over DV-02, which the human started in the board", out)
+        t = self.get("DV-02")
+        self.assertEqual((t["state"], t["started"]["by"]), ("doing", "claude"))
+        self.assertEqual([n["by"] for n in t["notes"]], ["human", "claude"])
+        self.assertIn("already in progress (started by claude)", self.fails("start", "DV-02", "--as", "codex"))
+
+    def test_tasks_started_before_kanvas_recorded_starts_stay_with_their_agent(self):
+        board = self.board()
+        kanvas.find_task(board, "DV-02")["state"] = "doing"
+        write_board(self.path, board)
+        err = self.fails("start", "DV-02")
+        self.assertIn("already in progress", err)
+        self.assertNotIn("started by", err)
+        self.assertNotIn("started by", self.run_cli("show", "DV-02")[1])
+
+    def test_html_a_start_in_the_board_records_the_human_until_the_task_goes_back(self):
+        board = self.board()
+        board["tasks"].append(task("DV-05", "todo", "DV"))
+        code = ("const b = normalize(input), get = (id) => b.tasks.find((t) => t.id === id), seen = (id) => ({ ...get(id) }), out = [];"
+                "ops.state('DV-02', seen('DV-02'), 'doing', '', '2026-10-30T09:00:00Z')(b); out.push(structuredClone(get('DV-02')));"
+                "ops.state('DV-02', seen('DV-02'), 'review', '', '2026-10-30T10:00:00Z')(b); out.push(get('DV-02').started);"
+                "ops.state('DV-02', seen('DV-02'), 'todo', 'Not yet')(b); out.push(get('DV-02').started || null);"
+                "const before = seen('DV-05'); get('DV-05').state = 'doing'; get('DV-05').started = { at: 'x', by: 'codex' };"
+                "ops.state('DV-05', before, 'doing')(b); out.push([get('DV-05').started, get('DV-05').notes.length]);"
+                "process.stdout.write(JSON.stringify(out));")
+        sections = [("function mustFind(", "\n// ----"), ("function inlineMd(", "\n// ----")]
+        started, review, back, replay = json.loads(run_html_js(self, code, json.dumps(board), sections))
+        self.assertEqual((started["state"], started["started"]), ("doing", {"at": "2026-10-30T09:00:00Z", "by": "human"}))
+        self.assertEqual([(n["by"], n["text"]) for n in started["notes"]], [("human", "Started in the board.")])
+        self.assertEqual(review, started["started"])
+        self.assertIsNone(back)
+        self.assertEqual(replay, [{"at": "x", "by": "codex"}, 0])
 
     def test_author_comes_from_as_or_environment(self):
         self.run_cli("note", "DV-02", "from env", env={"KANVAS_AGENT": "codex"})
@@ -1341,7 +1411,7 @@ class QuestionTests(TempBoard):
         self.assertIn("DV-02 now shows the human that you wait for their reply", out)
         last = self.get("DV-02")["notes"][-1]
         self.assertEqual((last["by"], last["text"]), ("claude", "Question: SQLite or Postgres?"))
-        self.assertIn("DV-02  Task DV-02  (waiting for the human: SQLite or Postgres?)", self.run_cli("status")[1])
+        self.assertIn("DV-02  Task DV-02  (started by claude)  (waiting for the human: SQLite or Postgres?)", self.run_cli("status")[1])
         self.assertIn("Waits:  for the human to reply to the question claude asked", self.run_cli("show", "DV-02")[1])
         _, out, _ = self.run_cli("note", "DV-02", "--as", "claude", "SQLite, the human said")
         self.assertIn("DV-02 no longer waits for the human.", out)
