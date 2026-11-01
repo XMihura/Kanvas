@@ -427,20 +427,25 @@ class BrowserSmokeTests(unittest.TestCase):
         return path
 
     def close_from_menu(self):
+        """Close the board from its menu and return what the dialog said."""
         self.until("the close board menu item", """(() => {
-            const present = () => [...document.querySelectorAll('[role=menuitem]')].some(b => b.textContent === 'Close board');
+            const present = () => [...document.querySelectorAll('[role=menuitem]')].some(b => b.textContent === 'Close current board');
             if (!present()) document.querySelector('.board-title').click();
             return present();
         })()""")
-        self.page.js("[...document.querySelectorAll('[role=menuitem]')].find(b => b.textContent === 'Close board').click()")
+        self.page.js("[...document.querySelectorAll('[role=menuitem]')].find(b => b.textContent === 'Close current board').click()")
         self.until("the close dialog", "!!document.querySelector('dialog[open]')")
+        said = self.page.js("document.querySelector('dialog[open]').textContent")
         self.page.js("document.querySelector('dialog[open] button[value=ok]').click()")
+        return said
 
     def test_close_menu_switches_to_another_board_and_keeps_the_file(self):
         self.open_other_board()
         before = read(self.path)
         self.load()
-        self.close_from_menu()
+        said = self.close_from_menu()
+        self.assertIn("The board file stays in your project", said)
+        self.assertNotIn("stops", said)
         self.until("the other board", "location.pathname === '/other/' && !!document.querySelector('.board-title')")
         self.assertEqual(read(self.path), before)
         state = json.loads(read(os.path.join(self.dir, "state", "boards.json")))
@@ -450,7 +455,7 @@ class BrowserSmokeTests(unittest.TestCase):
     def test_closing_the_last_board_stops_the_server_cleanly(self):
         before = read(self.path)
         self.load()
-        self.close_from_menu()
+        self.assertIn("It is the last open board, so Kanvas stops too.", self.close_from_menu())
         self.until("the board closed message", "document.querySelector('#lost').textContent.includes('This board was closed')")
         self.assertEqual(self.server.wait(timeout=10), 0)
         self.assertEqual(read(self.path), before)

@@ -73,7 +73,7 @@ Agents that support skills pick the skill up automatically, and `init` creates a
 Plan and track work on the Kanvas board; follow .agents/skills/kanvas/SKILL.md.
 ```
 
-`serve` opens the board in your browser. Keep it running while you work; Ctrl+C stops it. Run `kanvas serve` in your other projects too: their boards open in the same Kanvas, each at its own address such as `http://127.0.0.1:8765/my-project/`, and the terminal is free again right away. Switch boards from the menu on the board's name, or with Shift+← and Shift+→, or keep each in a tab of its own. Choose **Close board** in that menu, or run `kanvas close` in the project, to close it without deleting its files. Closing the last board stops Kanvas; `kanvas serve` opens it again.
+`serve` opens the board in your browser. Keep it running while you work; Ctrl+C stops it. Run `kanvas serve` in your other projects too: their boards open in the same Kanvas, each at its own address such as `http://127.0.0.1:8765/my-project/`, and the terminal is free again right away. Switch boards from the menu on the board's name, or with Shift+← and Shift+→, or keep each in a tab of its own. Choose **Close current board** in that menu, or run `kanvas close` in the project, to close it without deleting its files. Closing the last board stops Kanvas; `kanvas serve` opens it again.
 
 **4. Ask your agent:**
 

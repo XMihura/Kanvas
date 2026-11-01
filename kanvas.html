@@ -4930,9 +4930,11 @@ async function switchBoard(step) {
 }
 
 async function closeBoard() {
+  await refreshBoards();
+  const last = !openBoards.some((b) => b.name !== boardHere());
   const accepted = await modal(`Close ${boardLabel()}?`, [
-    h("p", {}, "Its board file stays in your project. Closing the last board stops Kanvas."),
-    h("p", {}, "Run kanvas serve in the project to open the board again."),
+    last ? h("p", {}, "It is the last open board, so Kanvas stops too.") : null,
+    h("p", {}, "The board file stays in your project. To open it again, run ", h("code", {}, "kanvas serve"), " in the project."),
     unsaved() ? h("p", {}, "Unsaved text in this tab will not be saved.") : null,
   ], { ok: "Close board" });
   if (!accepted || closingBoard) return;
@@ -4968,7 +4970,7 @@ function boardMenu() {
     store.readOnly ? null : { label: "Rename board", icon: "edit", run: () => { ui.editingTitle = true; renderHeader(); } },
     store.readOnly ? null : { label: "Groups…", icon: "lanes", run: groupsDialog },
     store.kind === "server" ? { label: "Open on your phone…", icon: "phone", run: phoneDialog } : null,
-    store.kind === "server" && canManageBoards && !closedBoard ? { label: "Close board", icon: "x", run: closeBoard } : null,
+    store.kind === "server" && canManageBoards && !closedBoard ? { label: "Close current board", icon: "x", run: closeBoard } : null,
     phone.matches ? null : "sep",
     phone.matches ? null : { label: ["Keyboard shortcuts", keys("?")], icon: "keyboard", run: helpDialog },
   ];
