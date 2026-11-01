@@ -439,6 +439,19 @@ class BrowserSmokeTests(unittest.TestCase):
         self.page.js("document.querySelector('dialog[open] button[value=ok]').click()")
         return said
 
+    def test_shortcuts_work_while_the_spacing_slider_has_focus(self):
+        self.load()
+        press = """(key) => {
+            const slider = document.querySelector('#spread'), e = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true });
+            slider.focus();
+            slider.dispatchEvent(e);
+            return e.defaultPrevented;
+        }"""
+        self.assertEqual(self.page.js("document.querySelector('#view-graph').getAttribute('aria-pressed')"), "true")
+        self.assertFalse(self.page.js(f"({press})('ArrowRight')"), "the arrow keys move the slider")
+        self.page.js(f"({press})('b')")
+        self.until("the board view", "document.querySelector('#view-board').getAttribute('aria-pressed') === 'true'")
+
     def test_close_menu_switches_to_another_board_and_keeps_the_file(self):
         self.open_other_board()
         before = read(self.path)

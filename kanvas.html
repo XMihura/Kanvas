@@ -5659,6 +5659,12 @@ function setupChrome() {
     const wrap = e.shiftKey ? i <= 0 && all[all.length - 1] : i === all.length - 1 && all[0];
     if (wrap) { e.preventDefault(); wrap.focus(); }
   });
+  // A slider keeps only the keys that move it, so shortcuts still work after it is dragged with the mouse.
+  const keyForField = (e) => {
+    const field = e.target.closest("input, textarea, select, [contenteditable]");
+    if (!field || !field.matches("input[type=range]")) return !!field;
+    return !e.ctrlKey && !e.metaKey && /^(Arrow|Page)|^(Home|End)$/.test(e.key);
+  };
   document.addEventListener("keydown", (e) => {
     if (!board || document.querySelector("dialog[open]")) return;
     if (menuEl && e.key === "Escape") { e.preventDefault(); closeMenu(true); return; }    if (picking) {
@@ -5667,13 +5673,13 @@ function setupChrome() {
       if (e.ctrlKey || e.metaKey || ["n", "?", "/", "h"].includes(e.key.toLowerCase())) return;
     }
     // Inside text fields, Ctrl+Z stays the browser's own text undo.
-    if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.target.closest("input, textarea, select, [contenteditable]")) {
+    if ((e.ctrlKey || e.metaKey) && !e.altKey && !keyForField(e)) {
       const k = e.key.toLowerCase();
       if (k === "z" || k === "y") { e.preventDefault(); step(k === "y" || e.shiftKey ? "redo" : "undo"); }
       return;
     }
     if (e.ctrlKey || e.metaKey || e.altKey) return;
-    if (e.target.closest("input, textarea, select, [contenteditable]")) return;
+    if (keyForField(e)) return;
     if (e.shiftKey && (e.key === "ArrowLeft" || e.key === "ArrowRight") && store?.kind === "server") {
       e.preventDefault();
       switchBoard(e.key === "ArrowRight" ? 1 : -1);
