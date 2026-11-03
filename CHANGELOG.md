@@ -5,6 +5,7 @@
 - Every start records who started the task and when, as `"started"` in the file. Cards, `status` and `show` name who started it, and an agent's `start` takes over a task the human started in the board; a task another agent started stays with that agent
 - YOLO can stop before a task: right-click a task of a YOLO chain and switch it from **Do it too** to **Stop before**, or choose **YOLO before this…**. Agents finish everything it depends on and wait, the card shows a STOP tag in a dashed ring, and the CLI marks it `(YOLO stops here)`. Stored as `"yolo_before": true`
 - Keyboard shortcuts keep working after you drag the spacing slider
+- Links to `obsidian://` URLs in descriptions and notes open in Obsidian, so a task can point to the notes of an Obsidian vault
 - Fixes: writes through a symlinked `kanvas.json` reach the real board, `export` handles lone surrogates, boards with wrong types and remembered boards holding `null` give clear errors, and `import` explains files that are not an Obsidian canvas
 
 ## v0.4.0 — 2026-10-27

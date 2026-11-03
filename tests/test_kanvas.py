@@ -669,6 +669,7 @@ class MarkdownTests(unittest.TestCase):
             ("RS-02, [see RS-02](https://example.com) and RS-02",
              f"<p>{ref('RS-02')}, {link('https://example.com', 'see RS-02')} and {ref('RS-02')}</p>"),
             ("[**RS-02** first](mailto:a@example.com)", f"<p>{link('mailto:a@example.com', '<strong>RS-02</strong> first')}</p>"),
+            ("[handoff](obsidian://open?file=h)", f"<p>{link('obsidian://open?file=h', 'handoff')}</p>"),
             ("[RS-02](https://example.com/RS-02) https://example.com/RS-02",
              f"<p>{link('https://example.com/RS-02', 'RS-02')} {link('https://example.com/RS-02', 'https://example.com/RS-02')}</p>"),
             # A refused URL leaves plain text, where a task ID is a reference again.

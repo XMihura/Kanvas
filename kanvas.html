@@ -5208,7 +5208,7 @@ function inlineMd(src) {
   const anchor = (href, html) => `<a href="${escHtml(href)}" target="_blank" rel="noopener noreferrer">${html}</a>`;
   // An anchor cannot hold another, so task IDs in link text stay plain. Without text, the URL names the link.
   const link = (href, text) => {
-    const ok = /^(https?:|mailto:)/i.test(href), html = text ? fmt(text, !ok) : escHtml(href);
+    const ok = /^(https?:|mailto:|obsidian:)/i.test(href), html = text ? fmt(text, !ok) : escHtml(href);
     return ok ? anchor(href, html) : html;
   };
   // A URL of several megabytes overflows the stack of the regex engine. It then stays text, and so may the links and
