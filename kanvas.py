@@ -50,7 +50,7 @@ PREFIX_RE = re.compile(r"^[A-Z][A-Z0-9]{0,5}$")
 UNGROUPED_PREFIX = "G"
 # Keys added after the first release go last: older versions write the keys they do not know after the ones they
 # know, so they write the same file.
-TASK_KEYS = ("id", "title", "state", "group", "deps", "yolo", "at", "by", "desc", "notes", "started", "yolo_before")
+TASK_KEYS = ("id", "title", "state", "group", "deps", "yolo", "at", "by", "desc", "notes", "started", "yolo_before", "hidden")
 REQUIRED_TASK_KEYS = ("id", "title", "state")
 GROUP_KEYS = ("id", "name")
 NOTE_KEYS = ("at", "by", "edited", "text")
@@ -133,7 +133,7 @@ def parse_board(text):
         t["desc"] = _js_text(t.get("desc"))
         deps = t.get("deps")
         t["deps"] = [_js_str(d) for d in deps] if isinstance(deps, list) else []
-        for flag in ("yolo", "yolo_before"):
+        for flag in ("yolo", "yolo_before", "hidden"):
             if _js_truthy(t.get(flag)):
                 t[flag] = True
             else:

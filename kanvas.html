@@ -203,6 +203,7 @@ svg#edges { position: absolute; left: 0; top: 0; overflow: visible; pointer-even
 @keyframes live { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--doing) 60%, transparent); } 70%, 100% { box-shadow: 0 0 0 6px transparent; } }
 .agent { width: 15px; height: 15px; border-radius: 4px; display: inline-flex; align-items: center; justify-content: center; font-size: 9.5px; font-weight: 750; color: #fff; background: var(--a); text-transform: uppercase; flex: none; }
 .card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.hidden-mark { display: inline-flex; color: var(--muted); }
 .head-end { display: inline-flex; align-items: center; gap: 5px; min-width: 0; }
 .yolo-tag { display: inline-flex; align-items: center; gap: 2px; font-size: 10px; font-weight: 800; letter-spacing: .08em; padding: 2px 6px 2px 4px; border-radius: 4px; color: var(--yolo-ink); background: var(--yolo-fill); background-size: 200% 100%; box-shadow: 0 0 10px color-mix(in srgb, var(--y3) 50%, transparent); animation: yolo-fire 2.4s ease-in-out infinite alternate; }
 .yolo-tag .icon svg { width: 11px; height: 11px; fill: currentColor; }
@@ -1023,7 +1024,7 @@ function normalize(b) {
     t.group = t.group || null;
     t.desc = String(t.desc || "");
     t.deps = Array.isArray(t.deps) ? t.deps.map(String) : [];
-    for (const flag of ["yolo", "yolo_before"]) if (t[flag]) t[flag] = true; else delete t[flag];
+    for (const flag of ["yolo", "yolo_before", "hidden"]) if (t[flag]) t[flag] = true; else delete t[flag];
     t.notes = Array.isArray(t.notes) ? t.notes.filter(isObj) : [];
   }
   return b;
@@ -1046,7 +1047,7 @@ function canonical(b) {
   const out = { kanvas: 1, title: b.title || "" };
   out.groups = b.groups.map((g) => ordered(g, ["id", "name"], ["id", "name"]));
   out.tasks = b.tasks.map((t) => {
-    const o = ordered(t, ["id", "title", "state", "group", "deps", "yolo", "at", "by", "desc", "notes", "started", "yolo_before"], ["id", "title", "state"]);
+    const o = ordered(t, ["id", "title", "state", "group", "deps", "yolo", "at", "by", "desc", "notes", "started", "yolo_before", "hidden"], ["id", "title", "state"]);
     if (o.notes) o.notes = o.notes.map((n) => ordered(n, ["at", "by", "edited", "text"], ["at", "by", "text"]));
     return o;
   });
@@ -2029,7 +2030,7 @@ const phone = matchMedia("(max-width: 640px), (pointer: coarse) and (max-device-
 const coarse = matchMedia("(pointer: coarse)");
 // The view chosen on wider screens, and the one chosen on phones, which start on the board.
 const prefs = (() => {
-  const defaults = { view: "graph", phoneView: "board", orient: "horizontal", arrange: "auto", hideDone: false, theme: null, levelGap: 70 };
+  const defaults = { view: "graph", phoneView: "board", orient: "horizontal", arrange: "auto", hideDone: false, showHiddenDone: false, theme: null, levelGap: 70 };
   try { return Object.assign(defaults, JSON.parse(localStorage.getItem("kanvas:prefs") || "{}")); } catch (e) { return defaults; }
 })();
 const savePrefs = () => { try { localStorage.setItem("kanvas:prefs", JSON.stringify(prefs)); } catch (e) { /* storage disabled */ } };
@@ -2514,6 +2515,11 @@ const ops = {
     }
     Object.assign(t, patch);
   },
+  hidden: (id, hidden) => (b) => {
+    const t = mustFind(b, id);
+    if (t.state !== "done") throw new Error(`${t.id} is no longer done`);
+    if (hidden) t.hidden = true; else delete t.hidden;
+  },
   // A checklist item is known by its text, and its rank tells identical items apart by their order, so a
   // replay still finds it after agents edit the rest of the description. An item already in the wanted state is left alone.
   checkItem: (id, text, rank, checked) => (b) => {
@@ -2533,6 +2539,7 @@ const ops = {
     if (starts) t.started = { at, by: "human" };
     else if (state === "todo" || state === "proposed") delete t.started;
     t.state = state;
+    if (state !== "done") delete t.hidden;
     const note = text || (starts ? "Started in the board." : "");
     if (note) addNote(t, note, at);
   },
@@ -2785,7 +2792,7 @@ const agentMark = (by) => h("span", { class: "agent", style: `--a:${by === "huma
 function cardLabel(t, vs, waits) {
   const q = openQuestion(t), w = vs === "doing" || vs === "review" ? worker(t) : null;
   const who = q ? q.by : vs === "blocked" ? `waiting on ${waits.join(", ")}` : w ? w.by : vs === "proposed" ? t.by : null;
-  return compact(`${t.id} ${t.title}`, q ? "Waiting for you" : LABEL[vs], who || null).join(", ");
+  return compact(`${t.id} ${t.title}`, q ? "Waiting for you" : LABEL[vs], t.state === "done" && t.hidden ? "Hidden from board" : null, who || null).join(", ");
 }
 
 function cardFoot(t) {
@@ -2828,6 +2835,8 @@ function yoloTag(t) {
   return via ? h("span", { class: "yolo-mark", title: t.state === "proposed" ? `In the ${yoloEnd(via)}: once you approve it, no review needed` : `Covered by ${yoloEnd(via)}: no approval or review needed` }, icon("zap")) : null;
 }
 
+const hiddenMark = (t) => t.state === "done" && t.hidden ? h("span", { class: "hidden-mark", title: "Hidden from the board" }, icon("eye-off")) : null;
+
 function fillCard(el, t) {
   const vs = vstate(t), asking = !!openQuestion(t);
   el.className = `card s-${vs}${asking ? " asking" : ""}${same(ui.selected, t.id) ? " sel" : ""}${multi.has(key(t.id)) ? " multi-on" : ""}${isYoloTarget(t) ? " yolo" : isYoloStop(t) ? " yolo-stop" : ""}${["enter", "flash", "moving", "zap"].filter((c) => el.classList.contains(c)).map((c) => ` ${c}`).join("")}`;
@@ -2835,7 +2844,7 @@ function fillCard(el, t) {
   el.setAttribute("role", "option");
   el.setAttribute("aria-label", cardLabel(t, vs, unmet(t)));
   el.replaceChildren(...compact(
-    h("div", { class: "card-head" }, h("span", { class: "cid" }, t.id), h("span", { class: "head-end" }, yoloTag(t), h("span", { class: "badge" }, asking ? "Waiting for you" : LABEL[vs]))),
+    h("div", { class: "card-head" }, h("span", { class: "cid" }, t.id), h("span", { class: "head-end" }, hiddenMark(t), yoloTag(t), h("span", { class: "badge" }, asking ? "Waiting for you" : LABEL[vs]))),
     h("div", { class: "card-title", title: t.title }, t.title),
     cardFoot(t),
     store.readOnly ? null : h("div", { class: "handle in", title: "Drag onto another card: this card will depend on that one" }),
@@ -3522,8 +3531,13 @@ function renderKanban() {
   const columns = VIEW_STATES.filter((s) => !(prefs.hideDone && s === "done") && (!ui.states.size || ui.states.has(s)));
   const tasks = boardOrder(board).filter(matches);
   $("#kanban").replaceChildren(...columns.map((s) => {
-    const items = tasks.filter((t) => vstate(t) === s);
+    const items = tasks.filter((t) => vstate(t) === s && (s !== "done" || prefs.showHiddenDone || !t.hidden));
     const head = h("div", { class: "col-head" }, h("span", { class: "dot" }), LABEL[s], h("span", { class: "count" }, items.length));
+    if (s === "done") {
+      const n = tasks.filter((t) => t.state === "done" && t.hidden).length;
+      const label = prefs.showHiddenDone ? "Hide hidden tasks" : "Show hidden tasks";
+      head.append(h("button", { title: `${label} (${n})`, "aria-label": `${label} (${n})`, "aria-pressed": String(!!prefs.showHiddenDone), onclick: () => { prefs.showHiddenDone = !prefs.showHiddenDone; savePrefs(); renderKanban(); } }, icon(prefs.showHiddenDone ? "eye-off" : "eye"), ` ${n}`));
+    }
     if (s === "proposed" && items.length && !store.readOnly) {
       head.append(h("button", { title: "Approve every proposal in this column", onclick: () => approveAll(items) }, icon("check"), "Approve all"));
     }
@@ -3613,7 +3627,7 @@ function kanbanCard(t) {
     role: "option", "aria-label": cardLabel(t, vs, unmet(t)),
     onclick: (e) => (picking ? pickToggle(t.id) : multiClick(e) ? toggleMulti(t.id) : select(t.id)),
   },
-  h("div", { class: "card-head" }, h("span", { class: "cid" }, t.id), h("span", { class: "head-end" }, yoloTag(t),
+  h("div", { class: "card-head" }, h("span", { class: "cid" }, t.id), h("span", { class: "head-end" }, hiddenMark(t), yoloTag(t),
     asking ? h("span", { class: "badge" }, "Waiting for you") : null,
     g ? h("span", { class: "gchip", title: g.name }, groupTag(groupColor(g)), h("span", {}, g.name)) : null)),
   h("div", { class: "card-title" }, t.title),
@@ -5072,6 +5086,7 @@ function cardMenu(t) {
     open,
     { label: picked ? "Unselect" : multi.size ? "Add to the selection" : "Select", icon: "check", run: () => toggleMulti(t.id) },
     "sep",
+    t.state === "done" ? { label: t.hidden ? "Show task on board" : "Hide task from board", icon: t.hidden ? "eye" : "eye-off", run: () => undoable(ops.hidden(t.id, !t.hidden), `${t.hidden ? "Showed" : "Hid"} ${t.id} ${t.hidden ? "on" : "from"} the board`) } : null,
     ...stateMoves(t).filter((m) => !m.danger).map((m) => ({ ...m, label: m.asks ? `${m.label}…` : m.label })),
     "sep",
     ...yoloMenu(t),
