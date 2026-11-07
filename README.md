@@ -288,6 +288,8 @@ States are `proposed`, `todo`, `doing`, `review` and `done`; blocked is computed
 
 ### Images
 
+When creating a task, paste or drop images into its description to preview them. Remove any you do not want before creating the task; they are uploaded only when you create it, so cancelling before then leaves no images behind. Images added to existing descriptions and notes are uploaded when pasted or dropped.
+
 Images live next to the board, in a `kanvas-files/` folder, each named by a hash of its bytes, such as `kanvas-files/3f9a1c0b7d2e4a51.png`. Descriptions and notes show them with ordinary Markdown, `![login form](kanvas-files/3f9a1c0b7d2e4a51.png)`, so `kanvas.json` stays small and readable. The same image added twice is one file, and a file never changes once written. Commit `kanvas-files/` with `kanvas.json`.
 
 - PNG, JPEG, GIF and WebP, up to 10 MB each. SVG is refused, since it can carry scripts.

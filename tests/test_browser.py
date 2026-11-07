@@ -528,6 +528,56 @@ class BrowserSmokeTests(unittest.TestCase):
         self.until("the full-size image to close", "!document.querySelector('dialog.lightbox')")
         self.assertEqual(self.page.logged(), [])
 
+    def test_new_task_previews_images_without_uploading_until_created(self):
+        self.load()
+        self.page.js("document.querySelector('#new-task').click()")
+        desc = "document.querySelector('dialog.dlg textarea[name=desc]')"
+        self.until("the new task form", f"{desc} !== null")
+        self.page.js("document.querySelector('dialog.dlg input[name=title]').value = 'Task with a preview'")
+        self.paste_image(desc)
+        self.until("the image preview", "document.querySelector('.image-preview img')?.complete")
+        self.assertEqual(self.page.js(f"{desc}.value"), "")
+        folder = os.path.join(self.dir, "demo", "kanvas-files")
+        self.assertFalse(os.path.exists(folder))
+        self.page.js("document.querySelector('.image-preview button').click()")
+        self.assertFalse(self.page.js("!!document.querySelector('.image-preview')"))
+        self.assertFalse(os.path.exists(folder))
+        self.paste_image(desc)
+        self.page.js("document.querySelector('dialog.dlg button[value=cancel]').click()")
+        self.until("the cancelled dialog to close", "!document.querySelector('dialog.dlg')")
+        self.assertFalse(os.path.exists(folder))
+
+        self.page.js("document.querySelector('#new-task').click()")
+        self.page.js("document.querySelector('dialog.dlg input[name=title]').value = 'Task with a preview'")
+        self.paste_image(desc)
+        self.until("the image preview again", "document.querySelector('.image-preview img')?.complete")
+        self.assertFalse(os.path.exists(folder))
+        self.page.js("document.querySelector('dialog.dlg button[value=ok]').click()")
+        task = self.wait_for("the task and its image", lambda: next((t for t in kanvas.load_board(self.path)['tasks']
+            if t['title'] == 'Task with a preview'), None))
+        ref = re.search(r'\((kanvas-files/[^)]+)\)', task['desc']).group(1)
+        self.assertTrue(os.path.isfile(os.path.join(self.dir, "demo", ref)))
+        self.until("the image displayed in the saved task", "document.querySelector('#panel .md img')?.naturalWidth === 1")
+
+    def test_new_task_keeps_image_and_text_when_upload_fails(self):
+        self.load()
+        self.page.js("document.querySelector('#new-task').click()")
+        desc = "document.querySelector('dialog.dlg textarea[name=desc]')"
+        self.page.js("document.querySelector('dialog.dlg input[name=title]').value = 'Retry image'")
+        self.page.js(f"{desc}.value = 'Keep this description'")
+        self.paste_image(desc)
+        self.hold_uploads()
+        self.page.js("document.querySelector('dialog.dlg button[value=ok]').click()")
+        self.wait_for_upload()
+        self.page.post("Fetch.failRequest", requestId=self.held.pop(), errorReason="Failed")
+        self.until("the upload error", f"{TOASTS}.includes('Cannot create task')")
+        self.assertEqual(self.page.js(f"{desc}.value"), 'Keep this description')
+        self.assertTrue(self.page.js("!!document.querySelector('dialog.dlg[open] .image-preview')"))
+        self.page.send("Fetch.disable")
+        self.page.js("document.querySelector('dialog.dlg button[value=ok]').click()")
+        self.wait_for("the task after retry", lambda: any(t['title'] == 'Retry image' and 'kanvas-files/' in t.get('desc', '')
+            for t in kanvas.load_board(self.path)['tasks']))
+
     def test_an_image_that_finishes_uploading_after_another_task_opens_stays_with_its_task(self):
         self.load("#BE-03")
         self.open_task("BE-03")
