@@ -390,6 +390,29 @@ class BrowserSmokeTests(unittest.TestCase):
     def click_in_menu(self, text):
         self.page.js(f"[...document.querySelectorAll('.ctx-menu button')].find((b) => b.innerText.includes({json.dumps(text)})).click()")
 
+    def test_hidden_done_tasks_can_be_shown_and_restored(self):
+        self.load()
+        self.page.js("document.querySelector('#view-board').click()")
+        card = "document.querySelector('.kcard[data-id=\"RS-01\"]')"
+        self.until("the done card", f"!!{card}")
+        self.page.js(f"""(() => {{ const c = {card}, r = c.getBoundingClientRect();
+            c.dispatchEvent(new MouseEvent('contextmenu', {{ bubbles: true, cancelable: true, clientX: r.left + 5, clientY: r.top + 5 }})); }})()""")
+        self.click_in_menu("Hide task from board")
+        self.wait_for("the hidden flag", lambda: kanvas.find_task(kanvas.load_board(self.path), "RS-01").get("hidden"))
+        self.until("the hidden card to disappear", f"!{card}")
+        self.page.js("document.querySelector('.s-done .col-head button').click()")
+        self.until("the hidden card and its mark", f"!!{card}?.querySelector('.hidden-mark')")
+        self.page.js("document.querySelector('#view-graph').click()")
+        self.until("the graph view", "document.querySelector('#view-graph').getAttribute('aria-pressed') === 'true'")
+        self.until("the hidden task in the graph", "!!document.querySelector('.card[data-id=\"RS-01\"] .hidden-mark')")
+        self.page.js("document.querySelector('#view-board').click()")
+        self.until("the shown card", f"!!{card}")
+        self.page.js(f"""(() => {{ const c = {card}, r = c.getBoundingClientRect();
+            c.dispatchEvent(new MouseEvent('contextmenu', {{ bubbles: true, cancelable: true, clientX: r.left + 5, clientY: r.top + 5 }})); }})()""")
+        self.click_in_menu("Show task on board")
+        self.wait_for("the hidden flag to be removed", lambda: not kanvas.find_task(kanvas.load_board(self.path), "RS-01").get("hidden"))
+        self.until("the restored card", f"{card} && !{card}.querySelector('.hidden-mark')")
+
     def test_the_card_menu_makes_yolo_stop_before_a_task_of_its_chain_and_do_it_again(self):
         self.load()
         self.assertIn("YOLO up to here…", self.card_menu("LN-02"))

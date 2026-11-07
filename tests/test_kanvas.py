@@ -187,6 +187,7 @@ class FormatTests(unittest.TestCase):
         board["tasks"][0]["desc"] = 'Quotes " and \\ backslash, tab\t, unicode é 日本 ✓, </script>'
         board["tasks"][1]["deps"] = []
         board["tasks"][1]["extra"] = {"nested": [1, 2.5, None, True]}
+        board["tasks"][0]["hidden"] = True
         board["tasks"][2]["yolo"] = True
         board["tasks"][3]["yolo"] = False
         board["tasks"][3]["notes"] = [
