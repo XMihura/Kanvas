@@ -529,12 +529,12 @@ class LeaveTests(unittest.TestCase):
         code = (
             "let fields = [], pending = 0, uploads = 0, store, board = normalize(input), IX = indexOf(board);\n"
             "globalThis.document = { querySelector: () => null, querySelectorAll: () => fields };\n"
-            "const get = (id) => IX.get(key(id)), ui = {}, drafts = { note: new Map(), back: new Map() };\n"
+            "const get = (id) => IX.get(key(id)), ui = {}, drafts = { note: new Map(), noteImages: new Map(), back: new Map() };\n"
             "const reset = () => {\n"
             "  fields = []; pending = 0; uploads = 0; store = { kind: 'server' };\n"
             "  Object.assign(ui, { selected: 'A-01', editingDesc: false, editingNote: null });\n"
-            "  Object.assign(drafts, { desc: null, noteEdit: null, title: null, boardTitle: null });\n"
-            "  drafts.note.clear(); drafts.back.clear();\n"
+            "  Object.assign(drafts, { desc: null, noteEdit: null, noteEditImages: null, title: null, boardTitle: null });\n"
+            "  drafts.note.clear(); drafts.noteImages.clear(); drafts.back.clear();\n"
             "};\n"
             "const cases = {\n"
             "  clean: () => {},\n"
@@ -545,6 +545,10 @@ class LeaveTests(unittest.TestCase):
             "  snapshot: () => { store = { kind: 'snapshot', readOnly: true }; drafts.note.set('A-01', 'typed'); },\n"
             "  note: () => { drafts.note.set('A-01', 'typed'); },\n"
             "  blankNote: () => { drafts.note.set('A-01', '  '); },\n"
+            "  noteImage: () => { drafts.noteImages.set('A-01', { hasFiles: () => true }); },\n"
+            "  removedNoteImage: () => { drafts.noteImages.set('A-01', { hasFiles: () => false }); },\n"
+            "  imageOnRemovedTask: () => { drafts.noteImages.set('A-09', { hasFiles: () => true }); },\n"
+            "  editedNoteImage: () => { drafts.noteEditImages = { hasFiles: () => true }; },\n"
             "  noteOnRemovedTask: () => { drafts.note.set('A-09', 'typed'); },\n"
             "  descEditorUnchanged: () => { ui.editingDesc = true; drafts.desc = 'Old '; },\n"
             "  descEditorChanged: () => { ui.editingDesc = true; drafts.desc = 'New'; },\n"
@@ -561,7 +565,7 @@ class LeaveTests(unittest.TestCase):
         board = {"kanvas": 1, "title": "", "groups": [], "tasks": [task("A-01", desc="Old")]}
         out = json.loads(run_html_js(self, code, json.dumps(board), [("function unsaved(", "async function boot(")]))
         asks = {name for name, value in out.items() if value}
-        self.assertEqual(asks, {"pendingSave", "imageUploading", "memoryBoardChanged", "note", "descEditorChanged", "noteEditorChanged", "givenBack", "dialogFilled"})
+        self.assertEqual(asks, {"pendingSave", "imageUploading", "memoryBoardChanged", "note", "noteImage", "editedNoteImage", "descEditorChanged", "noteEditorChanged", "givenBack", "dialogFilled"})
 
 
 class ChecklistTests(unittest.TestCase):
@@ -1140,7 +1144,8 @@ class PanelPlaceTests(unittest.TestCase):
             "  out.push([ui.selected, panel.hidden ? null : panel.scrollTop]);\n"
             "}\n"
             "process.stdout.write(JSON.stringify(out));")
-        sections = [("function select(", "\n// A note that failed to save"), ("const tabbables =", "\nfunction fillPanel(")]
+        sections = [("function select(", "\nfunction depRow("), ("function discardNoteEditImages(", "\nfunction editNote("),
+                    ("const tabbables =", "\nfunction fillPanel(")]
         out = json.loads(run_html_js(self, code, json.dumps({"board": board, "steps": steps}), sections))
         self.assertEqual(out, [
             ["A-01", 0],
