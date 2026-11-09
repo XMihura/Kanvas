@@ -1,6 +1,8 @@
 # Changelog
-## Unreleased
+
+## v0.5.0 — 2026-11-09
 - Images in descriptions and notes: paste or drop one into the editor, and it is kept next to the board in `kanvas-files/`, named by a hash of its bytes, with ordinary Markdown pointing to it; click an image to see it at full size. Agents attach screenshots with `attach ID IMAGE ... [-m TEXT]`. `export` puts the images inside the snapshot, and `check` warns about images that are missing or that nothing uses. PNG, JPEG, GIF and WebP up to 10 MB; images from the web stay links
+- Preview images before creating a task, with removable thumbnails and uploads deferred until creation (#56, thanks to @JMAgundezG). New notes and note edits use the same previews and upload only when saved; cancelling before saving leaves no uploads. New-note previews stay with their task when switching tasks, and failed uploads or saves keep the draft for retry (#59)
 - Close a board from its name menu or with `kanvas close`, keeping its files and forgetting it for the next start. Closing the last board stops Kanvas. Deleted or moved board files are noticed while the server runs, even with no browser open.
 - Every start records who started the task and when, as `"started"` in the file. Cards, `status` and `show` name who started it, and an agent's `start` takes over a task the human started in the board; a task another agent started stays with that agent
 - YOLO can stop before a task: right-click a task of a YOLO chain and switch it from **Do it too** to **Stop before**, or choose **YOLO before this…**. Agents finish everything it depends on and wait, the card shows a STOP tag in a dashed ring, and the CLI marks it `(YOLO stops here)`. Stored as `"yolo_before": true`
