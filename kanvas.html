@@ -446,8 +446,8 @@ dialog.dlg::backdrop { background: rgb(10 12 18 / .38); backdrop-filter: blur(2p
 .dlg .field .hint { font-weight: 400; color: var(--faint); }
 .image-composer { border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
 .image-composer:focus-within { border-color: var(--accent); outline: 2px solid color-mix(in srgb, var(--accent) 45%, transparent); outline-offset: 1px; }
-.dlg .field .image-composer textarea { display: block; width: 100%; border: 0; background: transparent; resize: vertical; box-shadow: none; }
-.dlg .field .image-composer textarea:focus { outline: none; }
+.image-composer textarea { display: block; width: 100%; border: 0; background: transparent; resize: vertical; box-shadow: none; }
+.image-composer textarea:focus { outline: none; }
 .image-previews { display: flex; flex-wrap: wrap; gap: 8px; padding: 8px 8px 0; }
 .image-previews:empty { display: none; }
 .image-preview { position: relative; width: 88px; height: 88px; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: var(--surface-2); }
@@ -2049,7 +2049,7 @@ const ui = { view: prefs[viewPref()], selected: null, search: "", states: new Se
 // Unsaved text in the panel survives re-renders caused by agent changes.
 // descBase is the description as it was when editing began, to notice an agent changing it meanwhile.
 // `back` keeps, per task, the text of saves that failed while another task was open, for when it opens again.
-const drafts = { desc: null, descBase: null, note: new Map(), noteEdit: null, title: null, boardTitle: null, back: new Map() };
+const drafts = { desc: null, descBase: null, note: new Map(), noteImages: new Map(), noteEdit: null, noteEditImages: null, title: null, boardTitle: null, back: new Map() };
 const view = { x: 40, y: 30, k: 1 };
 let fitted = false;
 
@@ -3768,6 +3768,7 @@ function select(id) {
   drafts.desc = drafts.descBase = null;
   ui.editingNote = null;
   drafts.noteEdit = null;
+  discardNoteEditImages();
   drafts.title = null;
   if (keptTitle != null && was) giveBack(was, () => { drafts.title = keptTitle; });
   const back = ui.selected ? drafts.back.get(key(ui.selected)) : null;
@@ -3786,14 +3787,6 @@ function giveBack(id, put) {
   if (same(ui.selected, id) && put() !== false) return;
   const k = key(id);
   drafts.back.set(k, [...(drafts.back.get(k) || []), put]);
-}
-
-// A note that failed to save goes back into its task's note box, ahead of anything typed there since.
-function noteBack(id, text) {
-  const box = same(ui.selected, id) ? $("#panel .note-form textarea") : null;
-  const now = box ? box.value : drafts.note.get(id) || "";
-  const v = now.trim() ? `${text}\n\n${now}` : text;
-  if (box) { box.value = v; box.dispatchEvent(new Event("input")); } else drafts.note.set(id, v);
 }
 
 function depRow(d, onRemove) {
@@ -4021,12 +4014,45 @@ function fillPanel(panel, t) {
   const checks = taskItems(t.desc).map((x) => x.checked);
   const done = checks.filter(Boolean).length;
 
-  const noteBox = h("textarea", { rows: 1, value: drafts.note.get(t.id) || "", placeholder: "Add a note for your agent or yourself", "aria-label": "New note" });
-  const form = ro ? null : h("div", { class: `note-form${noteBox.value ? " filled" : ""}` }, noteBox,
-    h("div", { class: "row-end" }, h("span", { class: "hint" }, keyLabel("Markdown · Ctrl+Enter")), h("button", { class: "primary", onclick: () => addNoteNow() }, icon("note"), "Add note")));
-  noteBox.addEventListener("input", () => { drafts.note.set(t.id, noteBox.value); form.classList.toggle("filled", !!noteBox.value); autosize(noteBox); });
-  const addNoteNow = () => { const v = noteBox.value.trim(); if (!v) return; noteBox.value = ""; drafts.note.delete(t.id); noteBox.blur(); commit(ops.note(t.id, v), { onFail: () => noteBack(t.id, v) }); };
-  noteBox.addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { addNoteNow(); focusPanel(noteBox); } if (e.key === "Escape") focusPanel(); });
+  let images = drafts.noteImages.get(t.id);
+  if (!images) {
+    images = imageComposer(drafts.note.get(t.id) || "", { rows: 1, placeholder: "Add a note for your agent or yourself", "aria-label": "New note" });
+    if (!ro) drafts.noteImages.set(t.id, images);
+  }
+  const noteBox = images.ta;
+  const filled = () => !!noteBox.value || images.hasFiles();
+  const cancelNote = () => {
+    if (images.saving) return;
+    images.dispose(); noteBox.value = ""; drafts.note.delete(t.id);
+    noteBox.dispatchEvent(new Event("input"));
+  };
+  const addNoteNow = async () => {
+    if (images.saving || (!noteBox.value.trim() && !images.hasFiles())) return;
+    images.saving = true; images.el.inert = true;
+    add.disabled = cancel.disabled = true;
+    uploads++;
+    try {
+      const v = (await images.upload()).trim();
+      let failed = false;
+      const queued = await commit(ops.note(t.id, v), { onFail: () => { failed = true; } });
+      await saveQueue;
+      if (queued && !failed) {
+        images.dispose(); noteBox.value = ""; drafts.note.delete(t.id);
+        noteBox.blur();
+      }
+    } catch (e) { toast(`Cannot add note: ${e.message}`, "error"); }
+    finally {
+      uploads--; images.saving = false; images.el.inert = false;
+      add.disabled = cancel.disabled = false;
+      renderPanel();
+    }
+  };
+  const add = h("button", { class: "primary", disabled: images.saving, onclick: addNoteNow }, icon("note"), "Add note");
+  const cancel = h("button", { disabled: images.saving, onclick: cancelNote }, "Cancel");
+  const form = ro ? null : h("div", { class: `note-form${filled() ? " filled" : ""}` }, images.el,
+    h("div", { class: "row-end" }, h("span", { class: "hint" }, keyLabel("Markdown · Ctrl+Enter")), cancel, add));
+  noteBox.oninput = () => { drafts.note.set(t.id, noteBox.value); form?.classList.toggle("filled", filled()); autosize(noteBox); };
+  noteBox.onkeydown = (e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); addNoteNow(); } if (e.key === "Escape") focusPanel(); };
   const earlier = t.notes.filter((n) => n !== top);
 
   panel.replaceChildren(head,
@@ -4172,7 +4198,14 @@ function isEditingNote(t, n) {
   return !!e && same(e.id, t.id) && sameNote(e, n) && e.rank === noteRank(t, n);
 }
 
+function discardNoteEditImages() {
+  // A save that is already under way owns its files until it succeeds or restores the draft.
+  if (drafts.noteEditImages && !drafts.noteEditImages.saving) drafts.noteEditImages.dispose();
+  drafts.noteEditImages = null;
+}
+
 function editNote(t, n) {
+  discardNoteEditImages();
   ui.editingNote = { id: t.id, at: n.at, by: n.by, text: n.text, rank: noteRank(t, n) };
   ui.focusNote = true;
   drafts.noteEdit = null;
@@ -4184,29 +4217,55 @@ function noteEditBtn(t, n) {
 }
 
 function noteEditor(t, n) {
-  const ta = h("textarea", { rows: 2, value: drafts.noteEdit ?? n.text ?? "", "aria-label": "Edit note" });
-  const close = () => { ui.editingNote = null; drafts.noteEdit = null; ta.blur(); };
-  const cancel = () => { close(); renderPanel(); };
-  const save = () => {
-    const v = ta.value.trim(), rank = noteRank(t, n);
-    if (!v) return ta.focus();
-    close();
-    const back = () => { if (ui.editingNote) return false; ui.editingNote = { id: t.id, at: n.at, by: n.by, text: n.text, rank }; drafts.noteEdit = v; };
-    if (v !== n.text) commit(ops.editNote(t.id, n, rank, v), { onFail: () => giveBack(t.id, back) }); else renderPanel();
+  const session = ui.editingNote;
+  const images = drafts.noteEditImages ||= imageComposer(drafts.noteEdit ?? n.text ?? "", { rows: 2, "aria-label": "Edit note" });
+  const ta = images.ta;
+  const close = () => {
+    if (ui.editingNote !== session) return;
+    ui.editingNote = null; drafts.noteEdit = null; drafts.noteEditImages = null; ta.blur();
   };
-  const remove = () => { close(); undoable(ops.removeNote(t.id, n, noteRank(t, n)), "Note deleted"); };
-  ta.addEventListener("input", () => { drafts.noteEdit = ta.value; autosize(ta); });
-  ta.addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { save(); focusPanel(ta); } if (e.key === "Escape") { e.stopPropagation(); cancel(); focusPanel(); } });
+  const cancel = () => { if (images.saving) return; images.dispose(); close(); renderPanel(); };
+  const save = async () => {
+    if (images.saving) return;
+    if (!ta.value.trim() && !images.hasFiles()) return ta.focus();
+    const rank = session.rank;
+    images.saving = true; images.el.inert = true;
+    controls.inert = true;
+    uploads++;
+    let failed = false;
+    const back = () => {
+      giveBack(t.id, () => {
+        if (ui.editingNote && ui.editingNote !== session) return false;
+        ui.editingNote = session; drafts.noteEdit = ta.value; drafts.noteEditImages = images;
+      });
+    };
+    try {
+      const v = (await images.upload()).trim();
+      if (v !== n.text) {
+        const queued = await commit(ops.editNote(t.id, n, rank, v), { onFail: () => { failed = true; back(); } });
+        if (!queued) failed = true;
+        await saveQueue;
+      }
+      if (!failed) { close(); images.dispose(); }
+    } catch (e) { failed = true; back(); toast(`Cannot save note: ${e.message}`, "error"); }
+    finally {
+      uploads--; images.saving = false; images.el.inert = false; controls.inert = false;
+      renderPanel();
+    }
+  };
+  const remove = () => { if (images.saving) return; images.dispose(); close(); undoable(ops.removeNote(t.id, n, session.rank), "Note deleted"); };
+  ta.oninput = () => { drafts.noteEdit = ta.value; autosize(ta); };
+  ta.onkeydown = (e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); save(); } if (e.key === "Escape") { e.stopPropagation(); cancel(); focusPanel(); } };
   if (ui.focusNote) {
     ui.focusNote = false;
     setTimeout(() => { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }, 0);
   }
-  return h("div", { class: "note-edit" }, ta,
-    h("div", { class: "row-end" },
-      h("button", { class: "ghost danger", onclick: remove }, icon("trash"), "Delete"),
-      h("span", { class: "hint" }),
-      h("button", { onclick: cancel }, "Cancel"),
-      h("button", { class: "primary", title: keyLabel("Save (Ctrl+Enter)"), onclick: save }, "Save")));
+  const controls = h("div", { class: "row-end", inert: images.saving },
+    h("button", { class: "ghost danger", onclick: remove }, icon("trash"), "Delete"),
+    h("span", { class: "hint" }),
+    h("button", { onclick: cancel }, "Cancel"),
+    h("button", { class: "primary", title: keyLabel("Save (Ctrl+Enter)"), onclick: save }, "Save"));
+  return h("div", { class: "note-edit" }, images.el, controls);
 }
 
 async function copy(text) {
@@ -4621,7 +4680,7 @@ async function newTaskDialog(group, { deps, blocks = [], title = "", desc = "" }
   };
   where = h("p", { class: "dlg-where" });
   sayWhere();
-  const images = imageComposer(desc);
+  const images = imageComposer(desc, { id: "new-task-desc", name: "desc", rows: 4 });
   const data = await modal("New task", [
     where,
     h("label", { class: "field" }, "Title", h("input", { name: "title", required: true, autocomplete: "off", value: title, placeholder: "What needs to happen?" })),
@@ -4629,7 +4688,7 @@ async function newTaskDialog(group, { deps, blocks = [], title = "", desc = "" }
     h("div", { class: "field" }, h("label", { for: "new-task-desc" }, "Description ", h("span", { class: "hint" }, "Markdown")), images.el),
     h("div", { class: "field" }, h("span", {}, "Blocked by ", h("span", { class: "hint" }, "must be done first")), depPick.el),
     h("div", { class: "field" }, h("span", {}, "Blocks ", h("span", { class: "hint" }, "wait for this task")), blockPick.el),
-  ], { ok: "Create task", beforeConfirm: () => images.upload() });
+  ], { ok: "Create task", beforeConfirm: async () => { images.ta.value = await images.upload(); } });
   images.dispose();
   if (!data) return;
   const out = {}, f = { title: data.get("title").replace(/\s+/g, " ").trim(), group: data.get("group"), desc: data.get("desc").trim(), deps: depPick.ids, blocks: blockPick.ids };
@@ -5510,11 +5569,12 @@ const imageFiles = (dt) => [...(dt && dt.files) || []].filter((f) => f.type.star
 let uploads = 0;
 const takesImages = (el) => el instanceof HTMLTextAreaElement && !el.readOnly && !el.disabled && !el.matches(".p-title");
 
-// New-task images stay in the browser until the human creates the task. The saved description uses the same
-// Markdown references as the other editors, so agents and snapshots can read it too.
-function imageComposer(desc) {
+// New tasks and notes keep their images in the browser until saved. The saved text uses ordinary Markdown.
+// A note retains its composer across panel re-renders, so previews stay with their draft and task.
+function imageComposer(text, attrs) {
   const files = [], previews = h("div", { class: "image-previews" });
-  const ta = h("textarea", { id: "new-task-desc", name: "desc", rows: 4, value: desc });
+  const ta = h("textarea", { ...attrs, value: text });
+  const changed = () => ta.dispatchEvent(new Event("input", { bubbles: true }));
   const add = (incoming) => {
     if (!store || !store.upload || store.readOnly) { toast("Images need the board opened through kanvas serve", "error"); return; }
     for (const file of incoming) {
@@ -5524,11 +5584,12 @@ function imageComposer(desc) {
       const name = file.name || "image";
       const tile = h("div", { class: "image-preview" }, h("img", { src: item.url, alt: name }),
         h("button", { type: "button", title: `Remove ${name}`, "aria-label": `Remove ${name}`, onclick: () => {
-          files.splice(files.indexOf(item), 1); URL.revokeObjectURL(item.url); tile.remove();
+          files.splice(files.indexOf(item), 1); URL.revokeObjectURL(item.url); tile.remove(); changed();
         } }, icon("x")));
       files.push(item);
       previews.append(tile);
     }
+    changed();
   };
   for (const [event, transfer] of [["paste", "clipboardData"], ["drop", "dataTransfer"]]) {
     ta.addEventListener(event, (e) => {
@@ -5539,7 +5600,8 @@ function imageComposer(desc) {
   }
   const el = h("div", { class: "image-composer" }, previews, ta);
   return {
-    el,
+    el, ta, saving: false,
+    hasFiles: () => files.length > 0,
     async upload() {
       const marks = [];
       for (const item of files) {
@@ -5547,9 +5609,9 @@ function imageComposer(desc) {
         const alt = (item.file.name || "").replace(/\.[^.]*$/, "").replace(/[[\]]/g, "") || "image";
         marks.push(`![${alt}](${item.ref})`);
       }
-      if (marks.length) ta.value += onOwnLines(ta.value, ta.value.length, ta.value.length, marks.join("\n"));
+      return ta.value + (marks.length ? onOwnLines(ta.value, ta.value.length, ta.value.length, marks.join("\n")) : "");
     },
-    dispose() { for (const item of files) URL.revokeObjectURL(item.url); },
+    dispose() { for (const item of files) URL.revokeObjectURL(item.url); files.length = 0; previews.replaceChildren(); },
   };
 }
 
@@ -5908,6 +5970,8 @@ function unsaved() {
   if (!store || store.readOnly) return false;
   if (pending || uploads || (store.kind === "memory" && store.dirty)) return true;
   if (document.querySelector("dialog .image-preview")) return true;
+  if ([...drafts.noteImages].some(([id, images]) => get(id) && images.hasFiles())) return true;
+  if (drafts.noteEditImages?.hasFiles()) return true;
   const t = ui.selected && get(ui.selected), filled = (el) => !!el.value.trim();
   if ([...drafts.note].some(([id, text]) => text.trim() && get(id))) return true;
   if ([...drafts.back.keys()].some((k) => IX.has(k)) || drafts.title != null || drafts.boardTitle != null) return true;
