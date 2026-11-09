@@ -25,11 +25,13 @@ proposed -> todo -> doing -> review -> done
 |-------|----------------|---------|
 | proposed | you (`propose`, `batch`) | An idea waiting for human approval |
 | todo | the human | Approved. Shown as **blocked** while a dependency is unfinished |
-| doing | you (`start`) | In progress |
+| doing | you (`start`), or the human | In progress. `status` and `show` say who started it |
 | review | you (`finish`, with a summary) | Waiting for the human to check it |
 | done | the human | Accepted |
 
 You may propose tasks and groups, start ready tasks, finish or pause tasks in progress, add notes and add dependencies. Until the human approves a proposal, you may also revise it (`edit`), withdraw it (`withdraw`) or remove its dependencies (`undepend`), so rework proposals freely while you discuss a plan. Approving proposals, changing approved tasks and marking tasks done belong to the human; ask for them in the conversation.
+
+A task the human started in the board is theirs: leave it unless they ask you to work on it. Then `start ID -m "Plan: ..."` takes it over and records you as the one working on it. A task another agent started stays with that agent.
 
 The human can also ask for changes to a proposal in the board. `status` then marks it `(changes requested: ...)`, and `show ID` has the request in its notes. Revise the proposal with `edit ID`, passing `-m` with what you changed; that note answers the request, and the mark goes.
 
@@ -42,6 +44,8 @@ The human can put a task under **YOLO** in the board. That covers the task and e
 - the YOLO task itself goes to review when you finish it, so the human checks the result of the whole chain;
 - when YOLO tasks follow one another in a chain, only the last one goes to review;
 - YOLO ends once its task is in review or done.
+
+The human can also make YOLO stop before a task. YOLO then covers everything that task depends on, as above: the CLI marks the task `(YOLO stops here)`, and `finish` tells you when everything before it is done. Start it only when the human asks you to; finishing it then sends it to review.
 
 Only the human can turn YOLO on or off. A proposal you link into a YOLO chain with `depend` stays a proposal: the YOLO task waits for it, and you start it only after the human approves it in the board, so ask them to. Linking an approved task into the chain puts it under YOLO, so it is done without review; do that only for work the human clearly asked for.
 
@@ -101,6 +105,8 @@ The human decides from what you write on the board: whether to approve a proposa
 | `finish ID -m SUMMARY` | doing -> review, or done for tasks a YOLO task depends on (the summary is required) |
 | `pause ID [-m NOTE]` | doing -> todo |
 | `note ID TEXT` | Append a note |
+| `attach ID IMAGE [IMAGE ...] [-m TEXT]` | Append a note with images (PNG, JPEG, GIF, WebP), such as screenshots of the result; prints the Markdown to show them in a proposal's description too |
+| `close [--port N]` | When the human asks, close this project’s board without deleting it (`-b PATH` selects another); closing the last board stops the server |
 | `ask ID QUESTION` | Show the human that you wait for their reply in the conversation; the next note ends the wait |
 | `propose GROUP TITLE [DESC] [--deps ID ...]` | New proposal; use `-` as GROUP for none |
 | `add-group NAME [--prefix XX]` | New group |

@@ -2,6 +2,7 @@
 
 import argparse
 import atexit
+import base64
 import contextlib
 import http.client
 import io
@@ -43,6 +44,14 @@ def task(tid, state="todo", group=None, deps=(), **extra):
     t = {"id": tid, "title": f"Task {tid}", "state": state, "group": group, "deps": list(deps)}
     t.update(extra)
     return t
+
+
+# Hand-edited tasks with a field of the wrong type, and the error each one gives.
+WRONG_TYPES = [
+    (task("G-01", ["todo"]), "Task G-01: 'state' must be a string"),
+    (task("G-01", group=["A"]), "Task G-01: 'group' must be a string or null"),
+    (task("G-01", notes=[{"at": "x", "by": "h", "text": 5}]), "Task G-01: note 'text' must be a string"),
+]
 
 
 def run_html_js(test, code, stdin, sections=()):
@@ -161,6 +170,13 @@ class FormatTests(unittest.TestCase):
         with self.assertRaises(kanvas.KanvasError):
             kanvas.parse_board('{"kanvas": 99, "groups": [], "tasks": []}')
 
+    def test_fields_of_the_wrong_type_are_rejected(self):
+        for bad, message in WRONG_TYPES:
+            with self.subTest(message=message):
+                with self.assertRaises(kanvas.KanvasError) as cm:
+                    kanvas.parse_board(json.dumps(dict(kanvas.new_board(), tasks=[bad])))
+                self.assertEqual(str(cm.exception), message)
+
     def assert_writers_agree(self, text):
         out = run_html_js(self, "process.stdout.write(serialize(normalize(input)));", text)
         self.assertEqual(out, kanvas.dumps(kanvas.parse_board(text)))
@@ -192,6 +208,9 @@ class FormatTests(unittest.TestCase):
                  "numbers": [1.0, -0.0, 1e21, 1e-7, 0.1, 2 ** 53 + 1, 10 ** 30, 123.456, 5e-324]},
                 {"id": "G-02", "title": "Lone \ud800 surrogate", "state": None, "deps": ["G-01"], "yolo": 0,
                  "notes": [{"at": "2026-10-21T09:00:00Z", "by": "codex", "text": "x", "4": 4}]},
+                {"yolo_before": "yes", "started": {"by": "human", "at": "2026-10-21T09:00:00Z", "2": 2}, "id": "G-03", "title": "Started"},
+                {"id": "G-04", "title": "Odd records", "yolo_before": 0, "started": [], "zzz": 1},
+                {"id": "G-05", "title": "", "started": "", "yolo_before": None},
             ],
         }))
 
@@ -352,7 +371,7 @@ class FailedSaveTests(unittest.TestCase):
 
     def run_commits(self, code, board):
         setup = (
-            "let board, confirmed, store, lost = null, pending = 0, writes = 0, saveQueue = Promise.resolve();\n"
+            "let board, confirmed, store, lost = null, closingBoard = false, pending = 0, writes = 0, saveQueue = Promise.resolve();\n"
             "const log = [], failed = [];\n"
             "toast = (msg) => log.push(msg);\n"
             "const setBoard = (b) => { board = b; }, render = () => {}, remember = () => ({}), forget = () => {}, setSync = () => {};\n"
@@ -428,7 +447,7 @@ class LostConnectionTests(unittest.TestCase):
         )
         out = json.loads(run_html_js(self, code, "{}", [("function serverStore()", "function fileStore(")]))
         down = ["Kanvas stopped running or cannot be reached", True]
-        closed = ["this board is no longer open in Kanvas", True]
+        closed = ["this board was closed in Kanvas", True]
         self.assertEqual(out, {
             "down load": down, "down poll": down, "down save": down,
             # Only reads give up on a request that hangs: a write may have landed, and waits for its answer.
@@ -508,23 +527,28 @@ class LeaveTests(unittest.TestCase):
 
     def test_unsaved_work(self):
         code = (
-            "let fields = [], pending = 0, store, board = normalize(input), IX = indexOf(board);\n"
+            "let fields = [], pending = 0, uploads = 0, store, board = normalize(input), IX = indexOf(board);\n"
             "globalThis.document = { querySelector: () => null, querySelectorAll: () => fields };\n"
-            "const get = (id) => IX.get(key(id)), ui = {}, drafts = { note: new Map(), back: new Map() };\n"
+            "const get = (id) => IX.get(key(id)), ui = {}, drafts = { note: new Map(), noteImages: new Map(), back: new Map() };\n"
             "const reset = () => {\n"
-            "  fields = []; pending = 0; store = { kind: 'server' };\n"
+            "  fields = []; pending = 0; uploads = 0; store = { kind: 'server' };\n"
             "  Object.assign(ui, { selected: 'A-01', editingDesc: false, editingNote: null });\n"
-            "  Object.assign(drafts, { desc: null, noteEdit: null, title: null, boardTitle: null });\n"
-            "  drafts.note.clear(); drafts.back.clear();\n"
+            "  Object.assign(drafts, { desc: null, noteEdit: null, noteEditImages: null, title: null, boardTitle: null });\n"
+            "  drafts.note.clear(); drafts.noteImages.clear(); drafts.back.clear();\n"
             "};\n"
             "const cases = {\n"
             "  clean: () => {},\n"
             "  pendingSave: () => { pending = 1; },\n"
+            "  imageUploading: () => { uploads = 1; },\n"
             "  memoryBoard: () => { store = { kind: 'memory', dirty: false }; },\n"
             "  memoryBoardChanged: () => { store = { kind: 'memory', dirty: true }; },\n"
             "  snapshot: () => { store = { kind: 'snapshot', readOnly: true }; drafts.note.set('A-01', 'typed'); },\n"
             "  note: () => { drafts.note.set('A-01', 'typed'); },\n"
             "  blankNote: () => { drafts.note.set('A-01', '  '); },\n"
+            "  noteImage: () => { drafts.noteImages.set('A-01', { hasFiles: () => true }); },\n"
+            "  removedNoteImage: () => { drafts.noteImages.set('A-01', { hasFiles: () => false }); },\n"
+            "  imageOnRemovedTask: () => { drafts.noteImages.set('A-09', { hasFiles: () => true }); },\n"
+            "  editedNoteImage: () => { drafts.noteEditImages = { hasFiles: () => true }; },\n"
             "  noteOnRemovedTask: () => { drafts.note.set('A-09', 'typed'); },\n"
             "  descEditorUnchanged: () => { ui.editingDesc = true; drafts.desc = 'Old '; },\n"
             "  descEditorChanged: () => { ui.editingDesc = true; drafts.desc = 'New'; },\n"
@@ -541,7 +565,7 @@ class LeaveTests(unittest.TestCase):
         board = {"kanvas": 1, "title": "", "groups": [], "tasks": [task("A-01", desc="Old")]}
         out = json.loads(run_html_js(self, code, json.dumps(board), [("function unsaved(", "async function boot(")]))
         asks = {name for name, value in out.items() if value}
-        self.assertEqual(asks, {"pendingSave", "memoryBoardChanged", "note", "descEditorChanged", "noteEditorChanged", "givenBack", "dialogFilled"})
+        self.assertEqual(asks, {"pendingSave", "imageUploading", "memoryBoardChanged", "note", "noteImage", "editedNoteImage", "descEditorChanged", "noteEditorChanged", "givenBack", "dialogFilled"})
 
 
 class ChecklistTests(unittest.TestCase):
@@ -862,6 +886,29 @@ class MarkdownTests(unittest.TestCase):
         out = json.loads(run_html_js(self, code, json.dumps(cases), [("function inlineMd(", "\n// ----")]))
         self.assertEqual(out, [True, True])
 
+    def render_images(self, srcs, store):
+        """markdown() of each source, with `store` as the page's store (None for no store)."""
+        code = ("const get = () => null;\n"
+                f"var store = {store};\n"
+                "process.stdout.write(JSON.stringify(input.map((src) => markdown(src))));")
+        return json.loads(run_html_js(self, code, json.dumps(srcs), [("function inlineMd(", "\n// ----")]))
+
+    def test_the_boards_own_images_show_where_the_store_reaches_them(self):
+        img = "kanvas-files/0123456789abcdef.png"
+        srcs = [f"![Login \"form\"]({img})", f"See ![]({img}) here", "![x](https://example.com/a.png)",
+                "![x](kanvas-files/../kanvas.json)", "![x](kanvas-files/0123456789abcdef.svg)", f"[link]({img})"]
+        served = self.render_images(srcs, "{ imageUrl: (ref) => ref }")
+        self.assertEqual(served, [
+            f'<p><img src="{img}" alt="Login &quot;form&quot;" loading="lazy"></p>',
+            f'<p>See <img src="{img}" alt="" loading="lazy"> here</p>',
+            # Other images stay links, and nothing else counts as one of the board's images.
+            f"<p>{link('https://example.com/a.png', 'x')}</p>", "<p>x</p>", "<p>x</p>", "<p>link</p>",
+        ])
+        # Without a store that reaches the images, as for a board opened from a file, they stay text.
+        for store in ("null", "{}"):
+            with self.subTest(store=store):
+                self.assertEqual(self.render_images(srcs[:2], store), ["<p>Login &quot;form&quot;</p>", f"<p>See {img} here</p>"])
+
 
 class BoardViewTests(unittest.TestCase):
     """The board view on phones, where one column fills the screen."""
@@ -994,7 +1041,7 @@ class ReviewFlowTests(unittest.TestCase):
             {"id": "BE-03", "during": {"editingDesc": True}},
         ]
         code = self.STATE + (
-            "let confirmed, store, lost = null, pending = 0, writes = 0, saveQueue = Promise.resolve();\n"
+            "let confirmed, store, lost = null, closingBoard = false, pending = 0, writes = 0, saveQueue = Promise.resolve();\n"
             "const edits = { undo: [], redo: [] }, toasts = [];\n"
             "const setBoard = (b) => { board = b; IX = indexOf(b); }, render = () => {}, setSync = () => {};\n"
             "const remember = (before, after) => { const e = { before, after }; edits.undo.push(e); return e; };\n"
@@ -1097,7 +1144,8 @@ class PanelPlaceTests(unittest.TestCase):
             "  out.push([ui.selected, panel.hidden ? null : panel.scrollTop]);\n"
             "}\n"
             "process.stdout.write(JSON.stringify(out));")
-        sections = [("function select(", "\n// A note that failed to save"), ("const tabbables =", "\nfunction fillPanel(")]
+        sections = [("function select(", "\nfunction depRow("), ("function discardNoteEditImages(", "\nfunction editNote("),
+                    ("const tabbables =", "\nfunction fillPanel(")]
         out = json.loads(run_html_js(self, code, json.dumps({"board": board, "steps": steps}), sections))
         self.assertEqual(out, [
             ["A-01", 0],
@@ -1149,6 +1197,18 @@ class CardLabelTests(unittest.TestCase):
         self.assertEqual(names["FE-04"], "FE-04 Dark mode, To do")
         self.assertEqual(names["RS-01"], "RS-01 Compare weather APIs, Done")
 
+    def test_a_task_in_progress_is_named_by_who_started_it(self):
+        with open(os.path.join(ROOT, "examples", "sample.json"), encoding="utf-8") as f:
+            b = json.load(f)
+        t = next(t for t in b["tasks"] if t["id"] == "BE-03")
+        t["started"] = {"at": "2026-10-20T08:00:00Z", "by": "claude"}
+        t["notes"].append({"by": "human", "at": "2026-10-20T10:00:00Z", "text": "Use the cached list"})
+        code = ("const t = normalize(input).tasks.find((t) => t.id === 'BE-03');\n"
+                "process.stdout.write(JSON.stringify([cardLabel(t, 'doing', []), worker(t)]));")
+        label, w = json.loads(run_html_js(self, code, json.dumps(b), [("function cardLabel(", "\nfunction cardFoot(")]))
+        self.assertEqual(label, "BE-03 City search endpoint, Doing, claude")
+        self.assertEqual((w["by"], w["at"]), ("claude", "2026-10-20T10:00:00Z"))
+
 
 class WorkflowTests(TempBoard):
     def test_status_lists_what_matters(self):
@@ -1189,6 +1249,65 @@ class WorkflowTests(TempBoard):
         t = self.get("DV-02")
         self.assertEqual(t["state"], "todo")
         self.assertEqual([n["text"] for n in t["notes"]], ["Plan: write the parser first", "Waiting for an API key"])
+        self.assertNotIn("started", t)
+
+    def test_start_records_who_started_the_task(self):
+        self.run_cli("start", "DV-02", "--as", "codex")
+        t = self.get("DV-02")
+        self.assertEqual(t["started"]["by"], "codex")
+        self.assertRegex(t["started"]["at"], r"\A\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ\Z")
+        self.assertEqual(list(json.loads(self.raw())["tasks"][1])[-1], "started")
+        self.assertEqual(t["notes"], [])
+        self.assertIn("State:  doing, started by codex 20", self.run_cli("show", "DV-02")[1])
+        self.assertIn("DV-02  Task DV-02  (started by codex)", self.run_cli("status")[1])
+        self.assertIn("already in progress (started by codex)", self.fails("start", "DV-02", "--as", "claude"))
+        self.run_cli("finish", "DV-02", "--as", "codex", "-m", "Parser done")
+        self.assertEqual(self.get("DV-02")["started"], t["started"])
+        self.assertIn("State:  review, started by codex", self.run_cli("show", "DV-02")[1])
+
+    def test_an_agent_takes_over_a_task_the_human_started_in_the_board(self):
+        board = self.board()
+        t = kanvas.find_task(board, "DV-02")
+        t.update(state="doing", started={"at": "2026-10-30T09:00:00Z", "by": "human"},
+                 notes=[{"at": "2026-10-30T09:00:00Z", "by": "human", "text": "Started in the board."}])
+        write_board(self.path, board)
+        _, out, _ = self.run_cli("show", "DV-02")
+        self.assertIn("State:  doing, started by the human in the board 2026-10-30 09:00:00 UTC; if they ask you to work on it,", out)
+        self.assertIn("DV-02  Task DV-02  (started by the human)", self.run_cli("status")[1])
+        _, out, _ = self.run_cli("start", "DV-02", "--as", "claude", "-m", "Plan: finish the parser")
+        self.assertIn("Took over DV-02, which the human started in the board", out)
+        t = self.get("DV-02")
+        self.assertEqual((t["state"], t["started"]["by"]), ("doing", "claude"))
+        self.assertEqual([n["by"] for n in t["notes"]], ["human", "claude"])
+        self.assertIn("already in progress (started by claude)", self.fails("start", "DV-02", "--as", "codex"))
+
+    def test_tasks_started_before_kanvas_recorded_starts_stay_with_their_agent(self):
+        board = self.board()
+        kanvas.find_task(board, "DV-02")["state"] = "doing"
+        write_board(self.path, board)
+        err = self.fails("start", "DV-02")
+        self.assertIn("already in progress", err)
+        self.assertNotIn("started by", err)
+        self.assertNotIn("started by", self.run_cli("show", "DV-02")[1])
+
+    def test_html_a_start_in_the_board_records_the_human_until_the_task_goes_back(self):
+        board = self.board()
+        board["tasks"].append(task("DV-05", "todo", "DV"))
+        code = ("const b = normalize(input), get = (id) => b.tasks.find((t) => t.id === id), seen = (id) => ({ ...get(id) }), out = [];"
+                "ops.state('DV-02', seen('DV-02'), 'doing', '', '2026-10-30T09:00:00Z')(b); out.push(structuredClone(get('DV-02')));"
+                "ops.state('DV-02', seen('DV-02'), 'review', '', '2026-10-30T10:00:00Z')(b); out.push(get('DV-02').started);"
+                "ops.state('DV-02', seen('DV-02'), 'todo', 'Not yet')(b); out.push(get('DV-02').started || null);"
+                "const start = ops.state('DV-05', seen('DV-05'), 'doing'); start(structuredClone(b));"
+                "get('DV-05').state = 'doing'; get('DV-05').started = { at: 'x', by: 'codex' };"
+                "start(b); out.push([get('DV-05').started, get('DV-05').notes.length]);"
+                "process.stdout.write(JSON.stringify(out));")
+        sections = [("function mustFind(", "\n// ----"), ("function inlineMd(", "\n// ----")]
+        started, review, back, replay = json.loads(run_html_js(self, code, json.dumps(board), sections))
+        self.assertEqual((started["state"], started["started"]), ("doing", {"at": "2026-10-30T09:00:00Z", "by": "human"}))
+        self.assertEqual([(n["by"], n["text"]) for n in started["notes"]], [("human", "Started in the board.")])
+        self.assertEqual(review, started["started"])
+        self.assertIsNone(back)
+        self.assertEqual(replay, [{"at": "x", "by": "codex"}, 0])
 
     def test_author_comes_from_as_or_environment(self):
         self.run_cli("note", "DV-02", "from env", env={"KANVAS_AGENT": "codex"})
@@ -1283,6 +1402,16 @@ class WorkflowTests(TempBoard):
         write_board(self.path, board)
         self.assertNotEqual(self.run_cli("check", check=False)[0], 0)
 
+    def test_commands_refuse_fields_of_the_wrong_type(self):
+        for bad, message in WRONG_TYPES:
+            write_board(self.path, dict(kanvas.new_board(), tasks=[bad]))
+            for args in (["status"], ["show", "G-01"], ["check"]):
+                with self.subTest(args=args, message=message):
+                    code, out, err = self.run_cli(*args, check=False)
+                    self.assertEqual(code, 1, out)
+                    self.assertRegex(err, r"\AError: [^\n]+\n\Z")
+                    self.assertIn(message, err)
+
 
 class QuestionTests(TempBoard):
     def test_ask_shows_the_wait_until_the_next_note(self):
@@ -1291,7 +1420,7 @@ class QuestionTests(TempBoard):
         self.assertIn("DV-02 now shows the human that you wait for their reply", out)
         last = self.get("DV-02")["notes"][-1]
         self.assertEqual((last["by"], last["text"]), ("claude", "Question: SQLite or Postgres?"))
-        self.assertIn("DV-02  Task DV-02  (waiting for the human: SQLite or Postgres?)", self.run_cli("status")[1])
+        self.assertIn("DV-02  Task DV-02  (started by claude)  (waiting for the human: SQLite or Postgres?)", self.run_cli("status")[1])
         self.assertIn("Waits:  for the human to reply to the question claude asked", self.run_cli("show", "DV-02")[1])
         _, out, _ = self.run_cli("note", "DV-02", "--as", "claude", "SQLite, the human said")
         self.assertIn("DV-02 no longer waits for the human.", out)
@@ -1498,6 +1627,82 @@ class YoloTests(TempBoard):
         self.assertEqual(seen, ["proposed", "blocked", "blocked", "proposed", "proposed", "proposed", "proposed"])
         # Y-01 was linked in before (by an agent) and stays proposed; Y-07 is outside the chain.
         self.assertEqual(after, ["proposed", "todo", "todo", "todo", "todo", "todo", "proposed", "todo"])
+
+    def test_agents_stop_before_a_task_marked_for_it(self):
+        board = self.board()
+        t = kanvas.find_task(board, "DV-03")
+        del t["yolo"]
+        t["yolo_before"] = True
+        write_board(self.path, board)
+        self.assertEqual(list(json.loads(self.raw())["tasks"][2])[-1], "yolo_before")
+        _, out, _ = self.run_cli("status")
+        self.assertIn("YOLO before DV-03: tasks marked (YOLO) need no approval", out)
+        self.assertIn("DV-03  Task DV-03  (waiting on DV-02)  (YOLO stops here)", out)
+        self.assertIn("YOLO:   up to DV-03, where it stops; you may start it", self.run_cli("show", "DV-02")[1])
+        self.assertIn("YOLO:   stops here: YOLO covers what this task depends on; start this task only when the human asks you to",
+                      self.run_cli("show", "DV-03")[1])
+        self.run_cli("start", "DV-02")
+        _, out, _ = self.run_cli("finish", "DV-02", "-m", "Parser done")
+        self.assertIn("YOLO covers it before DV-03, so it skips review.", out)
+        self.assertIn("Everything DV-03 depends on is done, and YOLO stops before it: stop here and tell the human.", out)
+        self.assertEqual(self.get("DV-02")["state"], "done")
+        _, out, _ = self.run_cli("ready")
+        self.assertEqual(out.splitlines(), ["DV-03  Task DV-03  (YOLO stops here)", "DV-05  Task DV-05"])
+        self.assertNotIn("YOLO before", self.run_cli("status")[1])
+        # When the human asks an agent to do it after all, it still comes back for review.
+        self.run_cli("start", "DV-03")
+        self.assertNotIn("stops here", self.run_cli("show", "DV-03")[1])
+        self.run_cli("finish", "DV-03", "-m", "Feature done")
+        self.assertEqual(self.get("DV-03")["state"], "review")
+
+    def test_a_task_yolo_stops_before_inside_a_chain_goes_to_review(self):
+        board = self.board()
+        kanvas.find_task(board, "DV-02")["yolo_before"] = True
+        write_board(self.path, board)
+        self.assertEqual(kanvas.yolo_cover(self.board()), {"DV-03": "DV-03", "DV-01": "DV-03"})
+        self.assertIn("DV-02  Task DV-02  (YOLO stops here)", self.run_cli("ready")[1])
+        self.run_cli("start", "DV-02")
+        self.run_cli("finish", "DV-02", "-m", "Parser done")
+        self.assertEqual(self.get("DV-02")["state"], "review")
+        board = self.board()
+        kanvas.find_task(board, "DV-02")["state"] = "done"
+        write_board(self.path, board)
+        self.assertIn("DV-03  Task DV-03  (YOLO)", self.run_cli("ready")[1])
+
+    def test_html_yolo_cover_with_stops_matches_python(self):
+        board = kanvas.new_board()
+        board["tasks"] = [task("S-01"), task("S-02", deps=["S-01"], yolo_before=True), task("S-03", deps=["S-02"]),
+                          task("S-04", deps=["S-03"], yolo=True), task("S-05"), task("S-06", deps=["S-05"], yolo_before=True),
+                          task("S-07", "review", deps=["S-05"], yolo_before=True), task("S-08", deps=["S-06"], yolo_before=1),
+                          task("S-09", deps=["S-01"], yolo=True, yolo_before=True)]
+        out = run_html_js(self, "process.stdout.write(JSON.stringify(Object.fromEntries(yoloCoverIn(normalize(input)))));", json.dumps(board))
+        cover = kanvas.yolo_cover(kanvas.parse_board(json.dumps(board)))
+        self.assertEqual(json.loads(out), cover)
+        self.assertEqual(cover, {"S-04": "S-04", "S-03": "S-04", "S-01": "S-04", "S-05": "S-06"})
+
+    def test_html_yolo_switches_between_doing_a_task_and_stopping_before_it(self):
+        board = kanvas.new_board()
+        board["tasks"] = [task("W-01", "proposed"), task("W-02", "proposed", deps=["W-01"]), task("W-03", "proposed", deps=["W-02"], yolo_before=True),
+                          task("W-04", "proposed", deps=["W-03"], yolo=True), task("W-05", "proposed", deps=["W-04"])]
+        steps = [("W-05", "before"), ("W-02", "before"), ("W-02", "on"), ("W-03", "on"), ("W-05", "on"), ("W-05", "off")]
+        code = ("const b = normalize(input), out = [];"
+                f"for (const [id, mode] of {json.dumps(steps)}) {{ ops.yolo(id, mode)(b);"
+                "  out.push(b.tasks.map((t) => `${t.state[0]}${t.yolo ? 'Y' : ''}${t.yolo_before ? 'S' : ''}`).join(' ')); }"
+                "process.stdout.write(JSON.stringify(out));")
+        sections = [("function mustFind(", "\n// ----"), ("function inlineMd(", "\n// ----")]
+        out = json.loads(run_html_js(self, code, json.dumps(board), sections))
+        self.assertEqual(out, [
+            # YOLO before W-05 approves what it depends on, still stops before W-03, and takes over W-04's YOLO.
+            "t t pS t pS",
+            # Stopping before W-02 takes it out of the chain and changes nothing else.
+            "t tS pS t pS",
+            "t t pS t pS",
+            # Doing W-03 too approves it, as a link into the chain would.
+            "t t t t pS",
+            # YOLO up to W-05 approves it, and agents do it too.
+            "t t t t tY",
+            "t t t t t",
+        ])
 
 
 class ProposalTests(TempBoard):
@@ -1998,9 +2203,36 @@ class ImportExportTests(TempBoard):
         self.assertIn("--force", self.fails("import", "Project.canvas"))
         self.run_cli("import", "Project.canvas", "--force")
 
+    def test_import_refuses_a_malformed_canvas(self):
+        card = {"id": "a", "type": "text", "text": "## AB-1 x", "color": "1", "x": 10, "y": 10, "width": 10, "height": 10}
+        group = {"type": "group", "x": 0, "y": 0, "width": 100, "height": 100}
+        cases = [
+            ([], "JSON object"),
+            ({"nodes": {"a": card}}, '"nodes"'),
+            ({"nodes": [card], "edges": 5}, '"edges"'),
+            ({"nodes": [card, "b"]}, '"nodes"'),
+            ({"nodes": [{"type": "text", "text": "## AB-1 x", "color": "1"}]}, '"id"'),
+            ({"nodes": [card, group]}, '"id"'),
+            ({"nodes": [dict(card, x="10")]}, "numbers"),
+            ({"nodes": [card, dict(group, id="g", width=None)]}, "numbers"),
+            ({"nodes": [dict(card, text=["## AB-1 x"])]}, '"text"'),
+            ({"nodes": [card], "edges": [{"fromNode": ["a"], "toNode": "a"}]}, '"fromNode"'),
+        ]
+        before = self.raw()
+        for canvas, problem in cases:
+            with self.subTest(canvas=canvas):
+                with open(os.path.join(self.dir, "Bad.canvas"), "w", encoding="utf-8") as f:
+                    json.dump(canvas, f)
+                code, _, err = self.run_cli("import", "Bad.canvas", check=False)
+                self.assertEqual(code, 1, err)
+                self.assertIn("Error: Bad.canvas is not an Obsidian canvas: ", err)
+                self.assertIn(problem, err)
+                self.assertNotIn("Traceback", err)
+                self.assertEqual(self.raw(), before)
+
     def test_export_snapshot(self):
         board = self.board()
-        board["tasks"].append(task("G-01", desc="</script><script>alert(1)</script>"))
+        board["tasks"].append(task("G-01", title="Café \ud83d", desc="</script><script>alert(1)</script>"))
         write_board(self.path, board)
         self.run_cli("export", "snap.html")
         with open(os.path.join(self.dir, "snap.html"), encoding="utf-8") as f:
@@ -2010,6 +2242,8 @@ class ImportExportTests(TempBoard):
         self.assertEqual(m.group(1), kanvas.board_name(self.path))
         self.assertNotIn("<", m.group(2))
         self.assertEqual(json.loads(m.group(2))["tasks"][0]["desc"], "</script><script>alert(1)</script>")
+        self.assertEqual(json.loads(m.group(2))["tasks"][0]["title"], "Café \ud83d")
+        self.assertIn("Café", m.group(2))
 
     def test_an_untitled_board_goes_by_its_name_in_the_page(self):
         """As on the boards page: the name in its address when served, the one export recorded, else "Kanvas"."""
@@ -2022,6 +2256,123 @@ class ImportExportTests(TempBoard):
         cases = [["Mine", "server", None], ["", "server", None], ["", "snapshot", "exported"], ["", "file", None], ["", None, None]]
         out = run_html_js(self, code, json.dumps(cases), [("const boardHere =", "\nasync function refreshBoards")])
         self.assertEqual(json.loads(out), ["Mine", "my-project", "exported", "Kanvas", "Kanvas"])
+
+
+PNG = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==")
+
+
+class ImageTests(TempBoard):
+    """Images live next to the board in kanvas-files/, named by a hash of their bytes."""
+
+    def write(self, name, data):
+        path = os.path.join(self.dir, name)
+        with open(path, "wb") as f:
+            f.write(data)
+        return path
+
+    def test_images_are_kept_once_by_their_hash(self):
+        ref = kanvas.store_image(self.path, PNG)
+        self.assertRegex(ref, r"^kanvas-files/[0-9a-f]{16}\.png$")
+        self.assertEqual(kanvas.store_image(self.path, PNG), ref)
+        self.assertEqual(os.listdir(os.path.join(self.dir, "kanvas-files")), [ref.split("/")[1]])
+        with open(kanvas.image_path(self.path, ref), "rb") as f:
+            self.assertEqual(f.read(), PNG)
+        for data in (b"<svg xmlns='http://www.w3.org/2000/svg'/>", b"<html>", b""):
+            with self.subTest(data=data):
+                self.assertRaises(kanvas.KanvasError, kanvas.store_image, self.path, data)
+        self.assertEqual([kanvas.image_type(d) for d in (b"\xff\xd8\xff\xe0", b"GIF89a..", b"RIFF\0\0\0\0WEBPVP8 ")], ["jpg", "gif", "webp"])
+        for bad in ("kanvas-files/../kanvas.json", "kanvas-files/0123456789abcdef.svg", "elsewhere/0123456789abcdef.png"):
+            self.assertIsNone(kanvas.image_path(self.path, bad))
+
+    def test_attach_adds_a_note_with_the_images(self):
+        shot = self.write("login [form].png", PNG)
+        _, out, _ = self.run_cli("attach", "DV-02", shot, "-m", "The login form after the fix", "--as", "claude")
+        ref = kanvas.store_image(self.path, PNG)
+        note = self.get("DV-02")["notes"][-1]
+        self.assertEqual((note["by"], note["text"]), ("claude", f"The login form after the fix\n\n![login (form)]({ref})"))
+        self.assertIn(f"![login (form)]({ref})", out)
+        self.run_cli("attach", "DV-03", shot, shot)
+        self.assertEqual(self.get("DV-03")["notes"][-1]["text"], f"![login (form)]({ref})\n\n![login (form)]({ref})")
+        before = self.raw()
+        self.assertIn("Only PNG, JPEG, GIF and WebP", self.fails("attach", "DV-02", self.write("x.svg", b"<svg/>")))
+        self.assertIn("Cannot read", self.fails("attach", "DV-02", "missing.png"))
+        self.assertIn("is done", self.fails("attach", "DV-01", shot))
+        self.assertEqual(self.raw(), before)
+
+    def test_check_warns_about_missing_and_unused_images(self):
+        used = kanvas.store_image(self.path, PNG)
+        unused = kanvas.store_image(self.path, PNG + b"x")
+        missing = "kanvas-files/ffffffffffffffff.png"
+        board = self.board()
+        board["tasks"][1]["desc"] = f"![a]({used})"
+        board["tasks"][2]["notes"] = [{"at": "2026-10-28T10:00:00Z", "by": "human", "text": f"![b]({missing})"}]
+        write_board(self.path, board)
+        code, out, _ = self.run_cli("check")
+        self.assertEqual(code, 0)
+        self.assertIn(f"warning: DV-03: image {missing} is missing", out)
+        self.assertIn(f"warning: {unused} is not used by any task", out)
+        self.assertNotIn(f"warning: {used}", out)
+
+    def test_a_refused_attach_keeps_no_image(self):
+        shot = self.write("shot.png", PNG)
+        self.assertIn("is done", self.fails("attach", "DV-01", shot))
+        self.assertIn("Only PNG, JPEG, GIF and WebP", self.fails("attach", "DV-02", shot, self.write("x.svg", b"<svg/>")))
+        self.assertFalse(os.path.exists(os.path.join(self.dir, "kanvas-files")))
+
+    def test_export_and_check_leave_out_files_that_are_not_the_image_they_are_named_after(self):
+        folder = os.path.join(self.dir, "kanvas-files")
+        os.mkdir(folder)
+        with open(os.path.join(self.dir, "secret.env"), "wb") as f:
+            f.write(PNG + b"TOKEN=secret")
+        ref = "kanvas-files/0123456789abcdef.png"
+        try:
+            os.symlink(os.path.join("..", "secret.env"), os.path.join(self.dir, ref))
+        except (OSError, NotImplementedError):
+            self.skipTest("this system cannot create symbolic links")
+        board = self.board()
+        board["tasks"][1]["desc"] = f"![a]({ref})"
+        write_board(self.path, board)
+        _, out, _ = self.run_cli("export", "snap.html")
+        self.assertNotIn("image", out)
+        with open(os.path.join(self.dir, "snap.html"), encoding="utf-8") as f:
+            self.assertNotIn(base64.b64encode(PNG + b"TOKEN=secret").decode("ascii"), f.read())
+        self.assertIn(f"image {ref} is missing", self.run_cli("check")[1])
+        # Keeping the image whose name a link holds replaces the link, never the file the link points to.
+        real = kanvas.image_path(self.path, kanvas.store_image(self.path, PNG))
+        os.remove(real)
+        os.symlink(os.path.join("..", "secret.env"), real)
+        kanvas.store_image(self.path, PNG)
+        self.assertFalse(os.path.islink(real))
+        with open(os.path.join(self.dir, "secret.env"), "rb") as f:
+            self.assertEqual(f.read(), PNG + b"TOKEN=secret")
+
+    def test_export_carries_the_images(self):
+        ref = kanvas.store_image(self.path, PNG)
+        board = self.board()
+        board["tasks"][1]["desc"] = f"![a]({ref}) and ![gone](kanvas-files/ffffffffffffffff.png)"
+        write_board(self.path, board)
+        _, out, _ = self.run_cli("export", "snap.html")
+        self.assertIn("and 1 image.", out)
+        with open(os.path.join(self.dir, "snap.html"), encoding="utf-8") as f:
+            html = f.read()
+        m = re.search(r'<script id="kanvas-files" type="application/json">(.*?)</script>', html, re.S)
+        self.assertEqual(json.loads(m.group(1)), {ref: "data:image/png;base64," + base64.b64encode(PNG).decode("ascii")})
+
+    def test_images_attached_through_a_link_sit_next_to_the_real_board(self):
+        link = os.path.join(self.dir, "proj", "kanvas.json")
+        os.mkdir(os.path.dirname(link))
+        try:
+            os.symlink(os.path.join("..", "kanvas.json"), link)
+        except (OSError, NotImplementedError):
+            self.skipTest("this system cannot create symbolic links")
+        self.run_cli("-b", link, "attach", "DV-02", self.write("shot.png", PNG))
+        ref = re.search(r"\((kanvas-files/[^)]+)\)", self.get("DV-02")["notes"][-1]["text"]).group(1)
+        self.assertTrue(os.path.isfile(os.path.join(self.dir, ref)))
+        self.assertFalse(os.path.exists(os.path.join(self.dir, "proj", kanvas.FILES_DIR)))
+        self.assertEqual(kanvas.image_path(link, ref), kanvas.image_path(self.path, ref))
+        # Through the real path, the board finds the image it was given through the link.
+        self.assertNotIn("missing", self.run_cli("check")[1])
+        self.assertIn("and 1 image.", self.run_cli("export", "snap.html")[1])
 
 
 class ConcurrencyTests(TempBoard):
@@ -2038,6 +2389,20 @@ class ConcurrencyTests(TempBoard):
         self.assertEqual(len(self.get("DV-02")["notes"]), workers * per_worker)
         leftovers = [f for f in os.listdir(self.dir) if f.endswith((".lock", ".tmp"))]
         self.assertEqual(leftovers, [])
+
+    def test_a_failed_write_leaves_no_temp_file(self):
+        """A full disk, or text that cannot be encoded, fails after the temporary file exists."""
+        def full_disk(*args, **kwargs):
+            f = open(*args, **kwargs)
+            f.write = mock.Mock(side_effect=OSError("No space left on device"))
+            return f
+        before = self.raw()
+        with mock.patch.object(kanvas, "open", side_effect=full_disk, create=True), self.assertRaises(OSError):
+            kanvas.write_text_atomic(self.path, "{}")
+        with self.assertRaises(UnicodeEncodeError):
+            kanvas.write_text_atomic(self.path, "Lone \ud83d surrogate")
+        self.assertEqual(self.raw(), before)
+        self.assertEqual([f for f in os.listdir(self.dir) if f.endswith(".tmp")], [])
 
     def test_stale_lock_is_cleared(self):
         lock = self.path + ".lock"
@@ -2061,6 +2426,22 @@ class ConcurrencyTests(TempBoard):
         with mock.patch.object(kanvas, "LOCK_TIMEOUT", 0.2):
             with self.assertRaisesRegex(kanvas.KanvasError, "Board is busy"):
                 kanvas.mutate(self.path, lambda board: None)
+
+    def test_writes_through_a_link_reach_the_board(self):
+        link = os.path.join(self.dir, "proj", "kanvas.json")
+        os.mkdir(os.path.dirname(link))
+        try:
+            os.symlink(os.path.join("..", "kanvas.json"), link)
+        except (OSError, NotImplementedError):
+            self.skipTest("this system cannot create symbolic links")
+        self.run_cli("-b", link, "note", "DV-02", "through a link")
+        self.assertTrue(os.path.islink(link))
+        self.assertEqual(self.get("DV-02")["notes"][-1]["text"], "through a link")
+        # The lock sits next to the real file, so writers through the link wait for the board's lock.
+        open(self.path + ".lock", "w").close()
+        with mock.patch.object(kanvas, "LOCK_TIMEOUT", 0.2):
+            with self.assertRaisesRegex(kanvas.KanvasError, "Board is busy"):
+                kanvas.mutate(link, lambda board: None)
 
     def test_unwritable_folder_is_reported(self):
         started = time.monotonic()
@@ -2096,6 +2477,109 @@ class ServerTests(TempBoard):
         if etag:
             headers["If-Match"] = etag
         return self.request("PUT", self.api, json.dumps(board).encode("utf-8"), headers)
+
+    def close_board(self, name=None, headers=None):
+        return self.request("DELETE", "/api/boards/" + (name or self.name), b"{}",
+                            headers if headers is not None else {"Content-Type": "application/json"})
+
+    def test_close_forgets_the_board_and_keeps_its_file(self):
+        self.server.remember = os.path.join(self.dir, "state", "boards.json")
+        other = self.other_project()
+        self.server.add_board(other)
+        before = self.raw()
+        status, _, body = self.close_board()
+        self.assertEqual(status, 200)
+        info = json.loads(body)
+        self.assertFalse(info["stopping"])
+        self.assertEqual([b["path"] for b in info["boards"]], [other])
+        self.assertEqual(self.raw(), before)
+        self.assertEqual(json.loads(kanvas.read_text_file(self.server.remember))["boards"], [other])
+        self.assertEqual(self.request("GET", self.api)[0], 404)
+        self.assertEqual(self.request("PUT", self.api, b"{}", {"Content-Type": "application/json"})[0], 404)
+        self.assertEqual(self.close_board()[0], 404)
+        self.assertEqual(self.request("GET", "/other/api/board")[0], 200)
+        self.assertTrue(json.loads(self.request("GET", "/api/boards")[2])["manage"])
+
+    def test_closed_urls_cannot_read_or_write_another_project(self):
+        for replacement_title in ("Other", "Different JSON"):
+            with self.subTest(replacement_title=replacement_title):
+                folder = "identical" if replacement_title == "Other" else "different"
+                original = self.other_project(os.path.join(folder, "a", "project"))
+                replacement = self.other_project(os.path.join(folder, "b", "project"), title=replacement_title)
+                name = json.loads(self.open_board(original)[2])["name"]
+                api = f"/{name}/api/board"
+                _, headers, body = self.request("GET", api)
+                self.assertEqual(self.close_board(name)[0], 200)
+                replacement_name = json.loads(self.open_board(replacement)[2])["name"]
+                before = kanvas.read_text_file(replacement)
+                stale_edit = json.loads(body)
+                stale_edit["title"] = "Edit from the closed tab"
+                status, _, _ = self.request("PUT", api, json.dumps(stale_edit).encode("utf-8"),
+                                            {"Content-Type": "application/json", "If-Match": headers["ETag"]})
+                # A 409 is unsafe too: the browser would replay the change onto its response.
+                self.assertEqual(status, 404)
+                self.assertEqual(self.request("GET", api)[0], 404)
+                self.assertEqual(kanvas.read_text_file(replacement), before)
+                self.assertNotEqual(replacement_name, name)
+                self.assertEqual(self.request("GET", f"/{replacement_name}/api/board")[0], 200)
+                self.assertEqual(json.loads(self.open_board(original)[2])["name"], name)
+                self.assertEqual(self.request("GET", api)[2], body)
+
+    def test_close_requires_this_computer_and_json(self):
+        for headers, expected in (({}, 415), ({"Content-Type": "text/plain"}, 415),
+                                  ({"Content-Type": "application/json", "Host": "evil.example"}, 403),
+                                  ({"Content-Type": "application/json", "X-Forwarded-For": "100.64.0.8"}, 403)):
+            with self.subTest(headers=headers):
+                self.assertEqual(self.close_board(headers=headers)[0], expected)
+                self.assertEqual(self.server.board_path(self.name), self.path)
+        self.server.opens_boards = False
+        try:
+            self.assertEqual(self.close_board()[0], 403)
+            self.assertFalse(json.loads(self.request("GET", "/api/boards")[2])["manage"])
+        finally:
+            self.server.opens_boards = True
+
+    def test_close_cli_finds_the_board_and_reports_when_it_is_not_open(self):
+        self.server.add_board(self.other_project())
+        _, out, _ = self.run_cli("close", "--port", str(self.port))
+        self.assertIn("Closed " + self.name, out)
+        self.assertIn("file was kept", out)
+        self.assertIsNone(self.server.board_path(self.name))
+        _, out, _ = self.run_cli("close", "--port", str(self.port))
+        self.assertIn("is not open", out)
+        self.assertNotIn("Closed ", out)
+
+    def test_close_cli_last_board_reports_shutdown(self):
+        _, out, _ = self.run_cli("close", "--port", str(self.port))
+        self.assertIn("last board. Kanvas is stopping", out)
+        self.assertEqual(self.server.board_list(), [])
+        self.assertIsNotNone(self.server.stop_at)
+
+    def test_close_cli_with_no_server_is_harmless(self):
+        before = self.raw()
+        with mock.patch.object(kanvas, "find_running", return_value=None), \
+                mock.patch.object(sys, "stdout", io.StringIO()) as out:
+            self.assertEqual(kanvas.main(["-b", self.path, "close"]), 0)
+        self.assertIn("not running", out.getvalue())
+        self.assertEqual(self.raw(), before)
+
+    def test_close_cli_accepts_an_explicit_missing_board(self):
+        other = self.other_project()
+        self.server.add_board(other)
+        os.remove(other)
+        _, out, _ = self.run_cli("-b", other, "close", "--port", str(self.port))
+        self.assertIn("Closed other", out)
+        self.assertEqual(self.server.board_path(self.name), self.path)
+
+    def test_missing_boards_are_removed_without_a_browser_poll(self):
+        other = self.other_project()
+        self.server.add_board(other)
+        os.remove(other)
+        deadline = time.monotonic() + 6
+        while self.server.board_path("other") is not None and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertIsNone(self.server.board_path("other"))
+        self.assertEqual(self.request("GET", self.api)[0], 200)
 
     def test_starting_skips_the_host_name_lookup(self):
         """socket.getfqdn, which HTTPServer calls on start, can take half a minute on macOS."""
@@ -2157,6 +2641,14 @@ class ServerTests(TempBoard):
         self.assertEqual(status, 403)
         self.assertEqual(self.raw(), before)
 
+    def test_rejects_fields_of_the_wrong_type(self):
+        before = self.raw()
+        for bad, message in WRONG_TYPES:
+            with self.subTest(message=message):
+                status, _, body = self.put(dict(kanvas.new_board(), tasks=[bad]), kanvas.etag_of(before))
+                self.assertEqual((status, json.loads(body)["error"]), (400, message))
+        self.assertEqual(self.raw(), before)
+
     def test_writes_need_the_version_they_change_and_a_task_list(self):
         before = self.raw()
         board = json.loads(before)
@@ -2187,6 +2679,59 @@ class ServerTests(TempBoard):
                     status = s.makefile("rb").readline().split()[1]
                     self.assertEqual(status, b"400")
         self.assertEqual(self.raw(), before)
+
+    def test_uploads_and_serves_images(self):
+        files = f"/{self.name}/api/files"
+        before = self.raw()
+        status, _, body = self.request("POST", files, PNG, {"Content-Type": "image/png"})
+        self.assertEqual(status, 200)
+        ref = json.loads(body)["path"]
+        self.assertEqual(ref, kanvas.store_image(self.path, PNG))
+        status, headers, body = self.request("GET", f"/{self.name}/{ref}")
+        self.assertEqual((status, body, headers["Content-Type"]), (200, PNG, "image/png"))
+        self.assertIn("immutable", headers["Cache-Control"])
+        self.assertEqual(headers["X-Content-Type-Options"], "nosniff")
+        self.assertIn("sandbox", headers["Content-Security-Policy"])
+        # Uploading leaves the board as it is: the image goes into it as Markdown, with the next save.
+        self.assertEqual(self.raw(), before)
+
+    def test_refuses_what_is_not_an_image_of_the_board(self):
+        files = f"/{self.name}/api/files"
+        cases = [
+            (b"<svg xmlns='http://www.w3.org/2000/svg'><script>alert(1)</script></svg>", {"Content-Type": "image/svg+xml"}, 415),
+            (PNG, {"Content-Type": "application/x-www-form-urlencoded"}, 415),
+            (PNG, {"Content-Type": "text/plain"}, 415),
+            (b"<html><script>alert(1)</script>", {"Content-Type": "image/png"}, 400),
+            (PNG, {"Content-Type": "image/png", "Host": "evil.example"}, 403),
+        ]
+        for body, headers, expected in cases:
+            with self.subTest(headers=headers, body=body[:12]):
+                self.assertEqual(self.request("POST", files, body, headers)[0], expected)
+        self.assertEqual(self.request("POST", "/nope/api/files", PNG, {"Content-Type": "image/png"})[0], 404)
+        self.assertFalse(os.path.exists(os.path.join(self.dir, "kanvas-files")))
+        for path in ("kanvas-files/..%2Fkanvas.json", "kanvas-files/0123456789abcdef.png", "kanvas-files/kanvas.json"):
+            with self.subTest(path=path):
+                self.assertEqual(self.request("GET", f"/{self.name}/{path}")[0], 404)
+
+    def test_serves_no_file_put_under_an_images_name(self):
+        # A cloned project can hold a link or another file named like an image; neither is read out.
+        folder = os.path.join(self.dir, "kanvas-files")
+        os.mkdir(folder)
+        with open(os.path.join(self.dir, "secret.env"), "wb") as f:
+            f.write(PNG + b"TOKEN=secret")
+        link = os.path.join(folder, "0123456789abcdef.png")
+        try:
+            os.symlink(os.path.join("..", "secret.env"), link)
+        except (OSError, NotImplementedError):
+            self.skipTest("this system cannot create symbolic links")
+        with open(os.path.join(folder, "fedcba9876543210.png"), "wb") as f:
+            f.write(PNG + b"TOKEN=secret")
+        for name in ("0123456789abcdef.png", "fedcba9876543210.png"):
+            with self.subTest(name=name):
+                self.assertEqual(self.request("GET", f"/{self.name}/kanvas-files/{name}")[0], 404)
+        ref = kanvas.store_image(self.path, PNG)
+        status, _, body = self.request("GET", f"/{self.name}/{ref}")
+        self.assertEqual((status, body), (200, PNG))
 
     def other_project(self, folder="other", title="Other"):
         path = os.path.join(self.dir, folder, "kanvas.json")
@@ -2271,6 +2816,13 @@ class ServerTests(TempBoard):
             f.write('{"hello": 1}')
         self.assertEqual(self.open_board(notes)[0], 400)
         self.assertEqual([b["name"] for b in json.loads(self.request("GET", "/api/boards")[2])["boards"]], [self.name])
+
+    def test_opening_json_that_is_not_an_object_is_refused(self):
+        null = os.path.join(self.dir, "null.json")
+        with open(null, "w") as f:
+            f.write("null")
+        status, _, body = self.open_board(null)
+        self.assertEqual((status, json.loads(body)["error"]), (400, f"{null} is not a Kanvas board"))
 
     def test_serve_in_another_project_opens_its_board_in_the_running_kanvas(self):
         other = self.other_project()
@@ -2630,18 +3182,113 @@ class RememberTests(TempBoard):
         with open(self.state, encoding="utf-8") as f:
             return json.load(f)
 
+    def test_closing_the_last_board_is_remembered_and_reopening_cancels_shutdown(self):
+        server = self.start(self.path)
+        name = kanvas.board_name(self.path)
+        self.assertTrue(server.remove_board(name))
+        self.assertEqual(self.remembered()["boards"], [])
+        self.assertIsNotNone(server.stop_at)
+        self.assertTrue(os.path.isfile(self.path))
+        self.assertEqual(self.start().board_list(), [])
+        server.add_board(self.path)
+        self.assertIsNone(server.stop_at)
+        self.assertEqual(self.remembered()["boards"], [self.path])
+
+    def test_missing_files_need_to_stay_missing_and_bad_json_stays_open(self):
+        server = self.start(self.path)
+        other = self.other("other")
+        server.add_board(other)
+        name = kanvas.board_name(self.path)
+        moved = self.path + ".moved"
+        os.rename(self.path, moved)
+        with mock.patch.object(kanvas.time, "monotonic", return_value=10):
+            server.service_actions()
+        self.assertEqual(server.board_path(name), self.path)
+        os.rename(moved, self.path)
+        with mock.patch.object(kanvas.time, "monotonic", return_value=20):
+            server.service_actions()
+        self.assertNotIn(name, server.missing_boards)
+        with open(self.path, "w") as f:
+            f.write("not JSON")
+        server.service_actions()
+        self.assertEqual(server.board_path(name), self.path)
+        with mock.patch.object(kanvas.os, "stat", side_effect=PermissionError):
+            server.service_actions()
+        self.assertEqual(server.board_path(name), self.path)
+        os.remove(self.path)
+        with mock.patch.object(kanvas.time, "monotonic", return_value=30):
+            server.service_actions()
+        with mock.patch.object(kanvas.time, "monotonic", return_value=33):
+            server.service_actions()
+        self.assertIsNone(server.board_path(name))
+        self.assertEqual(self.remembered()["boards"], [other])
+        self.assertIsNone(server.stop_at)
+
     def test_open_boards_come_back_after_a_restart(self):
         first = self.start(self.path)
         other, gone = self.other("other"), self.other("gone")
         first.add_board(other)
         first.add_board(gone)
-        self.assertEqual(self.remembered(), {"boards": [self.path, other, gone], "phone": False})
+        self.assertEqual(self.remembered(), {"boards": [self.path, other, gone], "phone": False,
+                                            "names": {kanvas.board_name(path): os.path.normcase(os.path.realpath(path))
+                                                      for path in (self.path, other, gone)}})
         first.server_close()
         os.remove(gone)
         again = self.start()
         self.assertEqual([(b["name"], b["path"]) for b in again.board_list()], [(kanvas.board_name(self.path), self.path), ("other", other)])
         self.assertFalse(again.phone_wanted)
         self.assertEqual(self.remembered()["boards"], [self.path, other])
+
+    def test_closed_names_and_collision_suffixes_survive_restarts(self):
+        first, second, third = [self.other(os.path.join(parent, "project")) for parent in ("a", "b", "c")]
+        server = self.start(self.path)
+        self.assertEqual(server.add_board(first), "project")
+        self.assertEqual(server.add_board(second), "project-2")
+        server.remove_board("project")
+        server.server_close()
+        again = self.start()
+        self.assertIsNone(again.board_path("project"))
+        self.assertEqual(again.board_path("project-2"), second)
+        self.assertEqual(again.add_board(third), "project-3")
+        self.assertEqual(again.add_board(first), "project")
+        self.assertEqual(again.board_path("project"), first)
+
+    def test_deleted_board_names_stay_reserved_after_restart(self):
+        original, replacement = [self.other(os.path.join(parent, "project")) for parent in ("a", "b")]
+        server = self.start(self.path)
+        server.add_board(original)
+        os.remove(original)
+        with mock.patch.object(kanvas.time, "monotonic", return_value=10):
+            server.service_actions()
+        with mock.patch.object(kanvas.time, "monotonic", return_value=13):
+            server.service_actions()
+        self.assertIsNone(server.board_path("project"))
+        server.server_close()
+        again = self.start()
+        self.assertEqual(again.add_board(replacement), "project-2")
+        self.assertIsNone(again.board_path("project"))
+
+    def test_legacy_state_reserves_missing_boards_before_restoring_others(self):
+        first, second = [self.other(os.path.join(parent, "project")) for parent in ("a", "b")]
+        os.remove(first)
+        os.makedirs(os.path.dirname(self.state))
+        with open(self.state, "w") as f:
+            json.dump({"boards": [first, second], "phone": False}, f)
+        server = self.start()
+        self.assertIsNone(server.board_path("project"))
+        self.assertEqual(server.board_path("project-2"), second)
+
+    def test_bad_name_reservations_do_not_break_restore(self):
+        os.makedirs(os.path.dirname(self.state))
+        for names in (None, [], "bad", {"api": self.path, "../bad": self.path, ".": self.path,
+                                        "relative": "relative.json", "number": 5, "null": None}):
+            with self.subTest(names=names):
+                with open(self.state, "w") as f:
+                    json.dump({"boards": [self.path], "names": names}, f)
+                server = self.start()
+                self.assertEqual(server.board_names, {kanvas.board_name(self.path): os.path.normcase(os.path.realpath(self.path))})
+                self.assertEqual([b["path"] for b in server.board_list()], [self.path])
+                server.server_close()
 
     def test_a_board_served_again_keeps_its_place(self):
         other = self.other("other")
@@ -2661,6 +3308,17 @@ class RememberTests(TempBoard):
                 self.assertEqual(server.board_list(), [])
                 self.assertFalse(server.phone_wanted)
                 server.server_close()
+
+    def test_json_that_is_not_an_object_is_not_reopened(self):
+        files = []
+        for text in ("null", "7", "true"):
+            files.append(os.path.join(self.dir, f"{text}.json"))
+            with open(files[-1], "w") as f:
+                f.write(text)
+        os.makedirs(os.path.dirname(self.state))
+        with open(self.state, "w") as f:
+            json.dump({"boards": files + [self.path]}, f)
+        self.assertEqual([b["path"] for b in self.start().board_list()], [self.path])
 
     def test_phone_access_is_remembered(self):
         server = self.start(self.path)

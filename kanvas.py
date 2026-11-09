@@ -11,6 +11,7 @@ Python 3.8+, standard library only. Run `python kanvas.py -h` for commands.
 """
 
 import argparse
+import base64
 import errno
 import hashlib
 import ipaddress
@@ -20,6 +21,7 @@ import re
 import shutil
 import socket
 import socketserver
+import stat
 import subprocess
 import sys
 import threading
@@ -34,7 +36,7 @@ from html import escape
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import quote, unquote, urlparse
 
-VERSION = "0.4.0"
+VERSION = "0.5.0"
 FORMAT = 1
 INSTALLED = __name__ == "kanvas_board"
 BOARD_FILE = "kanvas.json"
@@ -46,7 +48,9 @@ STATES = ("proposed", "todo", "doing", "review", "done")
 ID_RE = re.compile(r"^[A-Za-z][A-Za-z0-9]*-\d+$")
 PREFIX_RE = re.compile(r"^[A-Z][A-Z0-9]{0,5}$")
 UNGROUPED_PREFIX = "G"
-TASK_KEYS = ("id", "title", "state", "group", "deps", "yolo", "at", "by", "desc", "notes")
+# Keys added after the first release go last: older versions write the keys they do not know after the ones they
+# know, so they write the same file.
+TASK_KEYS = ("id", "title", "state", "group", "deps", "yolo", "at", "by", "desc", "notes", "started", "yolo_before")
 REQUIRED_TASK_KEYS = ("id", "title", "state")
 GROUP_KEYS = ("id", "name")
 NOTE_KEYS = ("at", "by", "edited", "text")
@@ -57,6 +61,12 @@ REQUIRED_NOTE_KEYS = ("at", "by", "text")
 LOCK_TIMEOUT = 10.0
 STALE_LOCK_AGE = 5.0
 MAX_UPLOAD = 20 * 1024 * 1024
+# Images live next to the board in FILES_DIR, each named by a hash of its bytes, and Markdown refers to them by that
+# relative path. The same image pasted twice is one file, and a file never changes once written.
+FILES_DIR = "kanvas-files"
+MAX_IMAGE = 10 * 1024 * 1024
+IMAGE_TYPES = {"png": "image/png", "jpg": "image/jpeg", "gif": "image/gif", "webp": "image/webp"}
+FILE_REF_RE = re.compile(re.escape(FILES_DIR) + r"/([0-9a-f]{16})\.(png|jpg|gif|webp)\b")
 
 
 class KanvasError(Exception):
@@ -116,15 +126,22 @@ def parse_board(text):
         t["title"] = _js_text(t.get("title"))
         t["state"] = t["state"] if _js_truthy(t.get("state")) else "todo"
         t["group"] = t["group"] if _js_truthy(t.get("group")) else None
+        if not isinstance(t["state"], str):
+            raise KanvasError(f"Task {t['id']}: 'state' must be a string")
+        if t["group"] is not None and not isinstance(t["group"], str):
+            raise KanvasError(f"Task {t['id']}: 'group' must be a string or null")
         t["desc"] = _js_text(t.get("desc"))
         deps = t.get("deps")
         t["deps"] = [_js_str(d) for d in deps] if isinstance(deps, list) else []
-        if _js_truthy(t.get("yolo")):
-            t["yolo"] = True
-        else:
-            t.pop("yolo", None)
+        for flag in ("yolo", "yolo_before"):
+            if _js_truthy(t.get(flag)):
+                t[flag] = True
+            else:
+                t.pop(flag, None)
         notes = t.get("notes")
         t["notes"] = [n for n in notes if isinstance(n, dict)] if isinstance(notes, list) else []
+        if not all(isinstance(n.get("text", ""), str) for n in t["notes"]):
+            raise KanvasError(f"Task {t['id']}: note 'text' must be a string")
     return board
 
 
@@ -191,6 +208,12 @@ def load_board(path):
     if not os.path.isfile(path):
         raise KanvasError(f"Board not found: {path}")
     return parse_board(read_text_file(path))
+
+
+def is_board_file(path):
+    """Whether the JSON file at `path` holds an object with a task list, as a board always does."""
+    data = json.loads(read_text_file(path))
+    return isinstance(data, dict) and "tasks" in data
 
 
 def _ordered(obj, keys, keep=()):
@@ -263,7 +286,8 @@ def dumps(board):
 @contextmanager
 def locked(path):
     """Cross-process lock so agents, the server and humans never lose writes."""
-    lock = path + ".lock"
+    # Lock the real file, so every link to a board shares its lock.
+    lock = os.path.realpath(path) + ".lock"
     deadline = time.monotonic() + LOCK_TIMEOUT
     while True:
         try:
@@ -296,10 +320,11 @@ def locked(path):
 
 
 def write_text_atomic(path, text):
+    path = os.path.realpath(path)  # Replace a link's target, not the link.
     tmp = f"{path}.{os.getpid()}-{threading.get_ident()}.tmp"
-    with open(tmp, "w", encoding="utf-8", newline="\n") as f:
-        f.write(text)
     try:
+        with open(tmp, "w", encoding="utf-8", newline="\n") as f:
+            f.write(text)
         for _ in range(40):
             try:
                 os.replace(tmp, path)
@@ -308,7 +333,7 @@ def write_text_atomic(path, text):
                 # Windows refuses to replace a file another process is reading.
                 time.sleep(0.05)
         os.replace(tmp, path)
-    except OSError:
+    except BaseException:
         if os.path.exists(tmp):
             os.remove(tmp)
         raise
@@ -329,6 +354,104 @@ def mutate(path, fn):
 
 def etag_of(data):
     return '"' + hashlib.sha1(data).hexdigest()[:20] + '"'
+
+
+# ---------------------------------------------------------------------------
+# Images
+# ---------------------------------------------------------------------------
+
+
+def image_type(data):
+    """The extension of a PNG, JPEG, GIF or WebP image, from its first bytes; None for anything else.
+    SVG is left out on purpose: it can carry scripts."""
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return "jpg"
+    if data[:6] in (b"GIF87a", b"GIF89a"):
+        return "gif"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "webp"
+    return None
+
+
+def files_dir(board_path):
+    # Next to the real board, as writes are, so every link to a board shares its images.
+    return os.path.join(os.path.dirname(os.path.realpath(board_path)), FILES_DIR)
+
+
+def image_name(data):
+    """The name an image is kept under, such as 0123abcd.png; refuses what is not an image Kanvas accepts."""
+    ext = image_type(data)
+    if ext is None:
+        raise KanvasError("Only PNG, JPEG, GIF and WebP images can be attached")
+    if len(data) > MAX_IMAGE:
+        raise KanvasError(f"The image is larger than {MAX_IMAGE // (1024 * 1024)} MB")
+    return f"{hashlib.sha256(data).hexdigest()[:16]}.{ext}"
+
+
+def store_image(board_path, data):
+    """Keeps an image next to the board and returns the path Markdown uses for it, as in kanvas-files/0123abcd.png."""
+    name = image_name(data)
+    folder = files_dir(board_path)
+    target = os.path.join(folder, name)
+    # A link or other file under the image's name is replaced by the image itself.
+    if read_image(board_path, f"{FILES_DIR}/{name}") is None:
+        os.makedirs(folder, exist_ok=True)
+        tmp = f"{target}.{os.getpid()}-{threading.get_ident()}.tmp"
+        with open(tmp, "wb") as f:
+            f.write(data)
+        os.replace(tmp, target)
+    return f"{FILES_DIR}/{name}"
+
+
+def image_path(board_path, ref):
+    """The file on disk for a path such as kanvas-files/0123abcd.png, or None when the path is not one."""
+    m = FILE_REF_RE.fullmatch(ref)
+    return os.path.join(files_dir(board_path), f"{m.group(1)}.{m.group(2)}") if m else None
+
+
+def read_image(board_path, ref):
+    """The bytes of a board's image, or None. Only a regular file whose bytes match its name counts: a link or other
+    file put in kanvas-files/ under an image's name, as a cloned project could, is never read out."""
+    target = image_path(board_path, ref)
+    if target is None:
+        return None
+    try:
+        if not stat.S_ISREG(os.lstat(target).st_mode):
+            return None
+        with open(target, "rb") as f:
+            data = f.read(MAX_IMAGE + 1)
+        return data if image_name(data) == os.path.basename(target) else None
+    except (OSError, KanvasError):
+        return None
+
+
+def image_refs(board):
+    """The images that descriptions and notes refer to, in order of first use."""
+    refs = {}
+    for t in board["tasks"]:
+        for text in [t.get("desc") or ""] + [n.get("text") or "" for n in t.get("notes", [])]:
+            for m in FILE_REF_RE.finditer(str(text)):
+                refs.setdefault(m.group(0), t["id"])
+    return refs
+
+
+def image_problems(board_path, board):
+    """Warnings about images referred to but missing, and images in the folder that nothing refers to."""
+    refs, warnings = image_refs(board), []
+    for ref, tid in refs.items():
+        if read_image(board_path, ref) is None:
+            warnings.append(f"{tid}: image {ref} is missing, or is not the image its name says")
+    try:
+        names = sorted(os.listdir(files_dir(board_path)))
+    except OSError:
+        names = []
+    for name in names:
+        ref = f"{FILES_DIR}/{name}"
+        if FILE_REF_RE.fullmatch(ref) and ref not in refs:
+            warnings.append(f"{ref} is not used by any task; delete it if you no longer need it")
+    return warnings
 
 
 # ---------------------------------------------------------------------------
@@ -382,6 +505,11 @@ def yolo_active(task):
     return bool(task.get("yolo")) and task.get("state") not in ("review", "done")
 
 
+def yolo_stop(task):
+    """A task YOLO stops before counts until it goes to review, like a YOLO task."""
+    return bool(task.get("yolo_before")) and task.get("state") not in ("review", "done")
+
+
 def yolo_cover(board):
     """Map task ID (upper case) -> ID of the YOLO task covering it.
 
@@ -392,19 +520,30 @@ def yolo_cover(board):
     stays a proposal until a human approves it.
     Only the last YOLO task of a chain goes to review: a YOLO task that another
     one depends on is covered by it like the rest of the chain.
+    A task with `yolo_before` covers what it depends on in the same way, and no
+    chain covers it, so agents stop before it until the human says otherwise.
     """
     tasks = task_map(board)
-    active = [t for t in board["tasks"] if yolo_active(t)]
-    reach = [(t, _upstream(tasks, t)) for t in active]
-    inside = set().union(*(up for _, up in reach))
+    stops = [t for t in board["tasks"] if yolo_stop(t)]
+    out = {t["id"].upper() for t in stops}
+    reach = [(t, _upstream(tasks, t)) for t in board["tasks"] if yolo_active(t) and t["id"].upper() not in out]
+    held = [(t, _upstream(tasks, t)) for t in stops]
+    inside = set().union(*(up for _, up in reach + held))
     cover = {}
     for t, up in reach:
         if t["id"].upper() in inside:
             continue
         cover.setdefault(t["id"].upper(), t["id"])
-        for k in up:
+        for k in up - out:
+            cover.setdefault(k, t["id"])
+    for t, up in held:
+        for k in up - out:
             cover.setdefault(k, t["id"])
     return cover
+
+
+def unfinished_before(tasks, task):
+    return any(d and d["state"] != "done" for d in map(tasks.get, _upstream(tasks, task)))
 
 
 def _upstream(tasks, task):
@@ -532,6 +671,14 @@ def add_note(task, text, by):
     if not text:
         raise KanvasError("Note text is empty")
     task.setdefault("notes", []).append({"at": now_iso(), "by": by, "text": text})
+
+
+def started_by(task):
+    """Who started the task's current run: an agent, "human" for a start in the board, or None for a run started
+    before Kanvas recorded it (mirrored in kanvas.html)."""
+    started = task.get("started")
+    by = started.get("by") if isinstance(started, dict) else None
+    return by if isinstance(by, str) and by else None
 
 
 QUESTION = "Question:"
@@ -729,6 +876,8 @@ def id_width(tasks):
 
 
 def yolo_mark(task, cover):
+    if yolo_stop(task):
+        return "  (YOLO stops here)" if task["state"] != "doing" else ""
     return "  (YOLO)" if cover and task["state"] in ("todo", "doing") and task["id"].upper() in cover else ""
 
 
@@ -747,6 +896,23 @@ def changes_mark(task, cover):
     return f"  (changes requested: {_gist(change_text(r))})" if r else ""
 
 
+def started_line(task):
+    by = started_by(task) if task["state"] in ("doing", "review", "done") else None
+    if not by:
+        return ""
+    at = task["started"].get("at")
+    when = f" {_when(at)}" if isinstance(at, str) and at else ""
+    if by == "human" and task["state"] == "doing":
+        return (f", started by the human in the board{when}; if they ask you to work on it, "
+                f"`{command_line('start ' + task['id'])}` takes it over")
+    return f", started by {'the human' if by == 'human' else by}{when}"
+
+
+def started_mark(task):
+    by = started_by(task) if task["state"] == "doing" else None
+    return f"  (started by {'the human' if by == 'human' else by})" if by else ""
+
+
 def print_rows(rows, tasks_by_id, indent="  ", show_state=True, cover=None):
     w = id_width(rows)
     for t in rows:
@@ -758,7 +924,7 @@ def print_task(board, task):
     tasks = task_map(board)
     cover = yolo_cover(board)
     print(f"{task['id']}  {task['title']}")
-    print(f"State:  {view_state(task, tasks)}")
+    print(f"State:  {view_state(task, tasks)}{started_line(task)}")
     if q := open_question(task):
         print(f"Waits:  for the human to reply to the question {q.get('by') or 'agent'} asked; the next note ends the wait")
     if changes_mark(task, cover):
@@ -768,13 +934,17 @@ def print_task(board, task):
     if task.get("by"):
         print(f"By:     {task['by']}" + (f", {task['at']}" if task.get("at") else ""))
     via = cover.get(task["id"].upper())
-    if via and task["state"] == "proposed":
-        print(f"YOLO:   joins the chain of {via} once a human approves it")
+    before = bool(via) and yolo_stop(tasks[via.upper()])
+    if yolo_stop(task) and task["state"] != "doing":
+        print("YOLO:   stops here: YOLO covers what this task depends on; start this task only when the human asks you to")
+    elif via and task["state"] == "proposed":
+        print(f"YOLO:   joins the chain {'before' if before else 'of'} {via} once a human approves it")
     elif via and task["state"] not in ("review", "done"):
         if via == task["id"]:
             print("YOLO:   set on this task; you may start it without approval, and finishing sends it to review")
         else:
-            print(f"YOLO:   through {via}; you may start it without approval, and finishing marks it done (no review)")
+            chain = f"up to {via}, where it stops" if before else f"through {via}"
+            print(f"YOLO:   {chain}; you may start it without approval, and finishing marks it done (no review)")
     if task.get("deps"):
         print("Depends on:")
         for dep in task["deps"]:
@@ -906,6 +1076,11 @@ def cmd_status(args):
         names = ", ".join(yolo)
         print(f"YOLO on {names}: tasks marked (YOLO) need no approval and finishing them marks them done; "
               f"{names} {'itself goes' if len(yolo) == 1 else 'themselves go'} to review.")
+    stops = [t["id"] for t in board["tasks"] if yolo_stop(t) and t["state"] != "doing" and unfinished_before(tasks, t)]
+    if stops:
+        names = ", ".join(stops)
+        print(f"YOLO before {names}: tasks marked (YOLO) need no approval and finishing them marks them done; "
+              f"YOLO stops before {names}, so stop there and tell the human.")
     sections = (
         ("doing", "Doing"),
         ("review", "Waiting for human review"),
@@ -923,7 +1098,7 @@ def cmd_status(args):
             line = f"  {t['id']:<{w}}  {t['title']}"
             if key == "blocked":
                 line += f"  (waiting on {', '.join(unmet_deps(t, tasks))})"
-            line += yolo_mark(t, cover) + waiting_mark(t) + changes_mark(t, cover)
+            line += started_mark(t) + yolo_mark(t, cover) + waiting_mark(t) + changes_mark(t, cover)
             print(line)
     errors, warnings = problems(board)
     if errors or warnings:
@@ -1008,6 +1183,7 @@ def cmd_check(args):
     path = board_path(args)
     board = load_board(path)
     errors, warnings = problems(board)
+    warnings += image_problems(path, board)
     for e in errors:
         print(f"error: {e}")
     for w in warnings:
@@ -1030,17 +1206,21 @@ def cmd_start(args):
         tasks = task_map(board)
         t = find_task(board, args.id)
         vs = view_state(t, tasks)
+        # The human starts tasks in the board when they mean to do them; an agent they ask to do one takes it over.
+        took = vs == "doing" and started_by(t) == "human"
         if vs == "blocked":
             raise KanvasError(f"{t['id']} is blocked by unfinished {', '.join(unmet_deps(t, tasks))}")
-        if vs != "todo":
-            raise KanvasError(f"{t['id']} cannot be started: {STATE_HINTS[vs]}")
+        if vs != "todo" and not took:
+            by = started_by(t) if vs == "doing" else None
+            raise KanvasError(f"{t['id']} cannot be started: {STATE_HINTS[vs]}" + (f" (started by {by})" if by else ""))
         t["state"] = "doing"
+        t["started"] = {"at": now_iso(), "by": actor(args)}
         if note:
             add_note(t, note, actor(args))
-        return board, t
+        return board, t, took
 
-    board, t = mutate(path, op)
-    print(f"Started {t['id']} (todo -> doing)\n")
+    board, t, took = mutate(path, op)
+    print(f"Took over {t['id']}, which the human started in the board\n" if took else f"Started {t['id']} (todo -> doing)\n")
     print_task(board, t)
 
 
@@ -1060,11 +1240,18 @@ def cmd_finish(args):
         add_note(t, summary, actor(args))
         via = yolo_cover(board).get(t["id"].upper())
         t["state"] = "done" if via and via.upper() != t["id"].upper() else "review"
-        return t, via
+        tasks = task_map(board)
+        reached = [s["id"] for s in board["tasks"] if yolo_stop(s) and s["state"] != "doing"
+                   and t["id"].upper() in _upstream(tasks, s) and not unfinished_before(tasks, s)]
+        return t, via, yolo_stop(tasks[via.upper()]) if via else False, reached
 
-    t, via = mutate(path, op)
+    t, via, before, reached = mutate(path, op)
     if t["state"] == "done":
-        print(f"Finished {t['id']} (doing -> done). YOLO covers it through {via}, so it skips review.")
+        print(f"Finished {t['id']} (doing -> done). YOLO covers it {'before' if before else 'through'} {via}, so it skips review.")
+        if reached:
+            names, one = ", ".join(reached), len(reached) == 1
+            print(f"Everything {names} {'depends' if one else 'depend'} on is done, and YOLO stops before {'it' if one else 'them'}: "
+                  f"stop here and tell the human.")
     elif via:
         print(f"Finished {t['id']} (doing -> review). YOLO is set on it, so a human reviews it; its YOLO chain is complete.")
     else:
@@ -1080,6 +1267,7 @@ def cmd_pause(args):
         if t["state"] != "doing":
             raise KanvasError(f"{t['id']} is {view_state(t, task_map(board))}; only tasks in progress can be paused")
         t["state"] = "todo"
+        t.pop("started", None)
         if note:
             add_note(t, note, actor(args))
         return t
@@ -1105,6 +1293,46 @@ def cmd_note(args):
     t, waited, requested = mutate(path, op)
     count = len(t["notes"])
     print(f"Added a note to {t['id']} ({count} note{'' if count == 1 else 's'})")
+    if waited and not open_question(t):
+        print(f"{t['id']} no longer waits for the human.")
+    if requested and not change_request(t):
+        print(f"This note answers the human's request for changes on {t['id']}.")
+
+
+def cmd_attach(args):
+    path = board_path(args)
+    text = read_input(args.message, args.stdin, args.file, "note")
+    files, images = [], []
+    for name in args.images:
+        try:
+            with open(name, "rb") as f:
+                data = f.read(MAX_IMAGE + 1)
+        except OSError as e:
+            raise KanvasError(f"Cannot read {name}: {e}")
+        try:
+            ref = f"{FILES_DIR}/{image_name(data)}"
+        except KanvasError as e:
+            raise KanvasError(f"{name}: {e}")
+        files.append(data)
+        alt = os.path.splitext(os.path.basename(name))[0].replace("[", "(").replace("]", ")")
+        images.append(f"![{alt}]({ref})")
+    note = "\n\n".join(([text] if text else []) + images)
+
+    def op(board):
+        t = find_task(board, args.id)
+        if t["state"] == "done":
+            raise KanvasError(f"{t['id']} is done; propose a follow-up task instead")
+        # The images are kept only once the note can go in, so a refused command leaves no file behind.
+        for data in files:
+            store_image(path, data)
+        waited, requested = open_question(t), change_request(t)
+        add_note(t, note, actor(args))
+        return t, waited, requested
+
+    t, waited, requested = mutate(path, op)
+    count = len(images)
+    print(f"Attached {count} image{'' if count == 1 else 's'} to {t['id']} in a note. To show "
+          f"{'it' if count == 1 else 'them'} in a description too, use: {' '.join(images)}")
     if waited and not open_question(t):
         print(f"{t['id']} no longer waits for the human.")
     if requested and not change_request(t):
@@ -1516,7 +1744,24 @@ CANVAS_SKIP_IDS = {"legend", "canvas-errors", "canvas-warnings", "canvas-lint", 
 
 def import_canvas(canvas, title=""):
     """Convert an Obsidian Canvas board from Kanvas 0.x into a Kanvas board."""
-    nodes = canvas.get("nodes", [])
+    if not isinstance(canvas, dict):
+        raise KanvasError('expected a JSON object with "nodes" and "edges"')
+    nodes, edges = canvas.get("nodes", []), canvas.get("edges", [])
+    for key, value in (("nodes", nodes), ("edges", edges)):
+        if not isinstance(value, list) or not all(isinstance(x, dict) for x in value):
+            raise KanvasError(f'"{key}" must be a list of objects')
+    # Text and group nodes are read below; other nodes are skipped.
+    for n in nodes:
+        if n.get("type") not in ("text", "group"):
+            continue
+        if not isinstance(n.get("id"), str):
+            raise KanvasError('every text and group node needs a string "id"')
+        if not all(isinstance(n.get(k, 0), (int, float)) for k in ("x", "y", "width", "height")):
+            raise KanvasError(f'node {n["id"]}: "x", "y", "width" and "height" must be numbers')
+        if not isinstance(n.get("text") or "", str):
+            raise KanvasError(f'node {n["id"]}: "text" must be a string')
+    if not all(isinstance(e.get("fromNode"), str) and isinstance(e.get("toNode"), str) for e in edges):
+        raise KanvasError('every edge needs a string "fromNode" and "toNode"')
     group_nodes = [n for n in nodes if n.get("type") == "group"]
 
     def container(n):
@@ -1549,7 +1794,7 @@ def import_canvas(canvas, title=""):
             "state": CANVAS_STATES.get(str(n.get("color", "1")), "todo"),
             "deps": [],
         }
-    for e in canvas.get("edges", []):
+    for e in edges:
         src, dst = e.get("fromNode"), e.get("toNode")
         if src in items and dst in items and src != dst and src not in items[dst]["deps"]:
             items[dst]["deps"].append(src)
@@ -1607,7 +1852,10 @@ def cmd_import(args):
         raise KanvasError(f"Cannot read {args.canvas}: {e}")
     out = os.path.abspath(args.output or os.path.join(os.path.dirname(os.path.abspath(args.canvas)), BOARD_FILE))
     title = os.path.splitext(os.path.basename(args.canvas))[0]
-    board = import_canvas(canvas, title)
+    try:
+        board = import_canvas(canvas, title)
+    except KanvasError as e:
+        raise KanvasError(f"{args.canvas} is not an Obsidian canvas: {e}")
     if os.path.exists(out) and not args.force:
         existing = load_board(out)
         if existing["tasks"] or existing["groups"]:
@@ -1627,10 +1875,20 @@ def cmd_export(args):
     if SNAPSHOT_TAG not in html:
         raise KanvasError("kanvas.html has no snapshot slot")
     data = json.dumps(canonical(board), ensure_ascii=False).replace("<", "\\u003c")
+    data = _LONE_SURROGATE.sub(lambda m: "\\u%04x" % ord(m.group()), data)
     tag = SNAPSHOT_TAG.replace('json">', f'json" data-at="{now_iso()}" data-name="{escape(board_name(path))}">{data}', 1)
+    # The images go inside the snapshot, so it stays one file to share.
+    images = {}
+    for ref in image_refs(board):
+        data = read_image(path, ref)
+        if data is not None:
+            images[ref] = f"data:{IMAGE_TYPES[ref.rsplit('.', 1)[1]]};base64,{base64.b64encode(data).decode('ascii')}"
+    if images:
+        tag += f'<script id="kanvas-files" type="application/json">{json.dumps(images)}</script>'
     out = os.path.abspath(args.output)
     write_text_atomic(out, html.replace(SNAPSHOT_TAG, tag, 1))
-    print(f"Wrote {rel(out)}: a read-only snapshot of {len(board['tasks'])} tasks. Open or share it as is.")
+    extra = f" and {len(images)} image{'' if len(images) == 1 else 's'}" if images else ""
+    print(f"Wrote {rel(out)}: a read-only snapshot of {len(board['tasks'])} tasks{extra}. Open or share it as is.")
 
 
 # ---------------------------------------------------------------------------
@@ -1851,6 +2109,8 @@ def page(title, body):
 
 LOCAL_NAMES = frozenset({"localhost", "127.0.0.1", "[::1]"})
 DEFAULT_PORT = 8765
+MISSING_BOARD_GRACE = 2.0
+EMPTY_SERVER_GRACE = 2.0
 
 
 def state_file():
@@ -1888,7 +2148,12 @@ class BoardServer(ThreadingHTTPServer):
         self.phone = []  # base URLs of the Tailscale listener, by name and by address
         self.phone_lock = threading.Lock()
         self.boards = share.boards if share else {}  # name -> path, in the order the boards were opened
-        self.boards_lock = share.boards_lock if share else threading.Lock()
+        # A closed URL must never point at another file: old tabs can still read and replay writes to it.
+        self.board_names = share.board_names if share else {}  # name -> original canonical path, including closed boards
+        self.boards_lock = share.boards_lock if share else threading.RLock()
+        self.missing_boards = {}  # name -> first time the file was absent
+        self.stop_at = None
+        self.stopping = False
         if path:
             self.add_board(path)
 
@@ -1963,28 +2228,80 @@ class BoardServer(ThreadingHTTPServer):
         """Open the board at `path` and return its name. A board that is already open keeps its name."""
         path = os.path.abspath(path)
         with self.boards_lock:
-            for name, known in self.boards.items():
-                if same_file(known, path):
-                    return name
-            base = name = board_name(path)
-            n = 2
-            while name in self.boards or name == "api":
-                name, n = f"{base}-{n}", n + 1
+            if self.stopping:
+                raise KanvasError("Kanvas is stopping after its last board closed; run `kanvas serve` again")
+            self.stop_at = None
+            name = self._reserve_board_name(path)
+            if name in self.boards:
+                return name
             self.boards[name] = path
-        if save:
-            self.save_state()
+            if save:
+                self.save_state()
         return name
+
+    def _reserve_board_name(self, path):
+        """Called under boards_lock. Keep the same URL when the original file is reopened."""
+        identity = os.path.normcase(os.path.realpath(path))
+        for name, known in self.board_names.items():
+            if known == identity:
+                return name
+        base = name = board_name(path)
+        n = 2
+        while name in self.board_names or name == "api":
+            name, n = f"{base}-{n}", n + 1
+        self.board_names[name] = identity
+        return name
+
+    def remove_board(self, name):
+        """Forget an open board without touching its file; stop after the last one closes."""
+        with self.boards_lock:
+            if name not in self.boards:
+                return False
+            del self.boards[name]
+            self.missing_boards.pop(name, None)
+            self.save_state()
+            if not self.boards:
+                # Let the DELETE response and other tabs' next poll arrive before exiting.
+                self.stop_at = time.monotonic() + EMPTY_SERVER_GRACE
+            return True
+
+    def service_actions(self):
+        """Notice deleted/moved boards even when no browser is polling."""
+        if not self.opens_boards:
+            return
+        now = time.monotonic()
+        with self.boards_lock:
+            for name, path in list(self.boards.items()):
+                try:
+                    os.stat(path)
+                except (FileNotFoundError, NotADirectoryError):
+                    since = self.missing_boards.setdefault(name, now)
+                    if now - since >= MISSING_BOARD_GRACE:
+                        self.remove_board(name)
+                        if not self.quiet:
+                            print(f"Closed {name}: its board file is missing", flush=True)
+                except OSError:
+                    # Permission and temporary I/O errors do not mean the file was deleted.
+                    self.missing_boards.pop(name, None)
+                else:
+                    self.missing_boards.pop(name, None)
+            if self.stop_at is not None and now >= self.stop_at and not self.boards and not self.stopping:
+                self.stopping = True
+                if not self.quiet:
+                    print("No boards remain open. Stopping Kanvas.", flush=True)
+                # shutdown() must run outside the serve_forever thread.
+                threading.Thread(target=self.shutdown, daemon=True).start()
 
     def save_state(self):
         if not self.remember:
             return
         with self.boards_lock:
-            state = {"boards": list(self.boards.values()), "phone": bool(self.phone)}
-        try:
-            os.makedirs(os.path.dirname(self.remember), exist_ok=True)
-            write_text_atomic(self.remember, json.dumps(state, indent=2, ensure_ascii=False) + "\n")
-        except OSError as e:
-            print(f"Could not remember the open boards in {self.remember}: {e}", file=sys.stderr)
+            state = {"boards": list(self.boards.values()), "phone": bool(self.phone), "names": self.board_names}
+            try:
+                os.makedirs(os.path.dirname(self.remember), exist_ok=True)
+                write_text_atomic(self.remember, json.dumps(state, indent=2, ensure_ascii=False) + "\n")
+            except OSError as e:
+                print(f"Could not remember the open boards in {self.remember}: {e}", file=sys.stderr)
 
     def restore(self):
         """Open the boards remembered from the last run that are still boards; return whether phones could connect then."""
@@ -1993,9 +2310,23 @@ class BoardServer(ThreadingHTTPServer):
         except (OSError, ValueError):
             return False
         boards = state.get("boards") if isinstance(state, dict) else None
+        names = state.get("names") if isinstance(state, dict) else None
+        with self.boards_lock:
+            for name, path in names.items() if isinstance(names, dict) else []:
+                if (re.fullmatch(r"[\w.-]+", name) and name.strip("-.") and name != "api"
+                        and isinstance(path, str) and os.path.isabs(path) and "\0" not in path):
+                    self.board_names[name] = os.path.normcase(os.path.abspath(path))
+            # Older state files have only the ordered paths. Reserve even missing boards' names,
+            # so skipping one cannot move a later project into an old tab's URL after a restart.
+            for path in boards if isinstance(boards, list) else []:
+                if isinstance(path, str):
+                    try:
+                        self._reserve_board_name(path)
+                    except (OSError, ValueError):
+                        continue
         for path in boards if isinstance(boards, list) else []:
             try:
-                if isinstance(path, str) and "tasks" in json.loads(read_text_file(path)):
+                if isinstance(path, str) and is_board_file(path):
                     load_board(path)
                     self.add_board(path, save=False)
             except (KanvasError, OSError, ValueError):
@@ -2031,8 +2362,9 @@ class BoardHandler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
-        for k, v in (headers or {}).items():
+        headers = dict(headers or {})
+        self.send_header("Cache-Control", headers.pop("Cache-Control", "no-store"))
+        for k, v in headers.items():
             self.send_header(k, v)
         self.end_headers()
         if body:
@@ -2127,7 +2459,7 @@ class BoardHandler(BaseHTTPRequestHandler):
                 body += "<p><small>Run <code>kanvas serve</code> in a project to open its board here.</small></p>"
             return self._send(200, page("Kanvas", body), "text/html; charset=utf-8")
         if parts == ["api", "boards"]:
-            info = {"kanvas": VERSION, "boards": self._board_list()}
+            info = {"kanvas": VERSION, "boards": self._board_list(), "manage": self._may_manage()}
             return self._send(200, json.dumps(info, ensure_ascii=False).encode("utf-8"))
         name, rest = parts[0], parts[1:]
         path = self.server.board_path(name)
@@ -2158,7 +2490,43 @@ class BoardHandler(BaseHTTPRequestHandler):
             if self.headers.get("If-None-Match") == tag:
                 return self._send(304, headers={"ETag": tag})
             return self._send(200, data, headers={"ETag": tag})
+        if len(rest) == 2 and rest[0] == FILES_DIR:
+            return self._image(path, f"{FILES_DIR}/{rest[1]}")
         return self._error(404, "Not found")
+
+    def _image(self, board, ref):
+        """An image of the board. Its name is a hash of its bytes, so it never changes and browsers keep it."""
+        data = read_image(board, ref)
+        if data is None:
+            return self._error(404, "Not found")
+        self._send(200, data, IMAGE_TYPES[ref.rsplit(".", 1)[1]], headers={
+            "Cache-Control": "private, max-age=31536000, immutable",
+            "X-Content-Type-Options": "nosniff",
+            "Content-Security-Policy": "default-src 'none'; sandbox",
+        })
+
+    def _upload_image(self, board):
+        """Keeps an image sent as the raw request body. An image type is not one a form can send, so the browser asks
+        before another site sends one, and Kanvas does not allow it."""
+        if (self.headers.get("Content-Type") or "").split(";")[0].strip().lower() not in IMAGE_TYPES.values():
+            return self._error(415, "Expected a PNG, JPEG, GIF or WebP image")
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = -1
+        if length <= 0:
+            return self._error(400, "Expected the length of the body in bytes in Content-Length")
+        if length > MAX_IMAGE:
+            return self._error(413, f"Images can be {MAX_IMAGE // (1024 * 1024)} MB at most")
+        self._body_read = True
+        data = self.rfile.read(length)
+        try:
+            ref = store_image(board, data)
+        except KanvasError as e:
+            return self._error(400, str(e))
+        except OSError as e:
+            return self._error(500, f"Cannot save the image: {e}")
+        self._send(200, json.dumps({"path": ref}).encode("utf-8"))
 
     def _phone(self, name):
         """The board's addresses for phones on Tailscale, with a QR code of the first; none while closed to phones.
@@ -2172,6 +2540,8 @@ class BoardHandler(BaseHTTPRequestHandler):
         if not self._host_allowed():
             return self._error(403, "Host not allowed")
         parts = self._route()
+        if parts[1:] == ["api", "files"] and self.server.board_path(parts[0]) is not None:
+            return self._upload_image(self.server.board_path(parts[0]))
         if parts[1:] == ["api", "phone"] and self.server.board_path(parts[0]) is not None:
             if not self._may_manage():
                 return self._error(403, "Only the computer running Kanvas can open it to phones")
@@ -2197,12 +2567,15 @@ class BoardHandler(BaseHTTPRequestHandler):
             if not isinstance(path, str) or not os.path.isabs(path):
                 raise KanvasError("Expected the board's absolute path")
             # A board always has its task list, so another JSON file is not taken for one.
-            if "tasks" not in json.loads(read_text_file(path)):
+            if not is_board_file(path):
                 raise KanvasError(f"{path} is not a Kanvas board")
             load_board(path)
         except (KanvasError, ValueError, AttributeError, OSError) as e:
             return self._error(400, str(e))
-        name = self.server.add_board(path)
+        try:
+            name = self.server.add_board(path)
+        except KanvasError as e:
+            return self._error(503, str(e))
         if not self.server.quiet:
             print(f"[{time.strftime('%H:%M:%S')}] opened {name}: {path}", flush=True)
         info = {"name": name, "url": f"/{quote(name)}/"}
@@ -2211,10 +2584,20 @@ class BoardHandler(BaseHTTPRequestHandler):
         self._send(200, json.dumps(info, ensure_ascii=False).encode("utf-8"))
 
     def do_DELETE(self):
-        """Closes Kanvas to phones again."""
+        """Close a board, or close Kanvas to phones again, from this computer only."""
         if not self._host_allowed():
             return self._error(403, "Host not allowed")
         parts = self._route()
+        if len(parts) == 3 and parts[:2] == ["api", "boards"]:
+            if not self._may_manage():
+                return self._error(403, "Boards close only from the computer running Kanvas")
+            if self._read_json() is None:
+                return
+            with self.server.boards_lock:
+                if not self.server.remove_board(parts[2]):
+                    return self._error(404, "That board is not open in Kanvas")
+                info = {"boards": self._board_list(), "stopping": not self.server.boards}
+            return self._send(200, json.dumps(info, ensure_ascii=False).encode("utf-8"))
         if parts[1:] != ["api", "phone"] or self.server.board_path(parts[0]) is None:
             return self._error(404, "Not found")
         if not self._may_manage():
@@ -2335,6 +2718,33 @@ def join_running(url, path):
         raise KanvasError(f"The Kanvas running at {url} did not open the board: {message}")
     except (OSError, ValueError, KeyError) as e:
         raise KanvasError(f"The Kanvas running at {url} did not answer: {e}")
+
+
+def cmd_close(args):
+    path = board_path(args, must_exist=False)
+    running = find_running(args.port)
+    if not running:
+        print("Kanvas is not running; the board is not open.")
+        return
+    url, _ = running
+    try:
+        with LOCAL.open(url + "api/boards", timeout=5) as r:
+            boards = json.loads(r.read().decode("utf-8"))["boards"]
+        found = next((b for b in boards if isinstance(b.get("path"), str) and same_file(b["path"], path)), None)
+        if not found:
+            print(f"{path} is not open in Kanvas.")
+            return
+        req = urllib.request.Request(url + "api/boards/" + quote(found["name"], safe=""), b"{}",
+                                     {"Content-Type": "application/json"}, method="DELETE")
+        with LOCAL.open(req, timeout=5) as r:
+            info = json.loads(r.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        raise KanvasError(f"Kanvas could not close the board (HTTP {e.code}); check that the server is up to date")
+    except (OSError, ValueError, KeyError) as e:
+        raise KanvasError(f"The Kanvas running at {url} did not answer: {e}")
+    print(f"Closed {found['name']}. Its board file was kept.")
+    if info.get("stopping"):
+        print("That was the last board. Kanvas is stopping.")
 
 
 TAILSCALE_PATHS = (
@@ -2644,6 +3054,8 @@ def service_status():
     print(f"Remembered boards ({state_file()}):" if boards else "Remembered boards: none yet")
     for b in boards:
         print(f"  {b}")
+    if boards:
+        print("Close a board with `kanvas close` in its project, or `kanvas -b PATH close`.")
 
 
 def cmd_service(args):
@@ -2710,7 +3122,7 @@ def build_parser():
     add("blocked", cmd_blocked, "blocked tasks and what they wait on")
     add("check", cmd_check, "validate the board (exit code 1 on errors)")
 
-    p = add("start", cmd_start, "start a ready task (todo -> doing)")
+    p = add("start", cmd_start, "start a ready task (todo -> doing), or take over one the human started in the board")
     p.add_argument("id")
     p.add_argument("-m", "--message", help="optional note, e.g. your plan")
     text_sources(p, "note")
@@ -2727,6 +3139,11 @@ def build_parser():
     p.add_argument("id")
     p.add_argument("text", nargs="?")
     text_sources(p, "note")
+    p = add("attach", cmd_attach, "attach images (PNG, JPEG, GIF, WebP) to a task in a note, e.g. screenshots")
+    p.add_argument("id")
+    p.add_argument("images", nargs="+", metavar="IMAGE")
+    p.add_argument("-m", "--message", help="optional text for the note, above the images")
+    text_sources(p, "note text")
     p = add("ask", cmd_ask, "show the human that you wait for their reply to a question in the conversation; "
                             "the next note ends the wait")
     p.add_argument("id")
@@ -2767,6 +3184,9 @@ def build_parser():
     p.add_argument("--tailscale", action="store_true", help="also open the boards to your phone and other devices on your Tailscale network")
     p.add_argument("--saved", action="store_true", help="serve only the boards open last time, without a project of its own (for `kanvas service`)")
     p.add_argument("--no-open", action="store_true", help="do not open a browser")
+    p = add("close", cmd_close, "close this board without deleting its file; the last board stops Kanvas")
+    p.add_argument("--port", type=int, default=DEFAULT_PORT,
+                   help="look for Kanvas on this port and the next 19 (default: %(default)s)")
     p = add("service", cmd_service, "start Kanvas when you log in, so your boards are always open")
     p.add_argument("action", choices=["install", "uninstall", "status"])
     p.add_argument("--tailscale", action="store_true", help="also open the boards to your phone over Tailscale")

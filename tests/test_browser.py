@@ -195,7 +195,14 @@ class Page(DevTools):
 
 
 NOTE_BOX = "document.querySelector('#panel .note-form textarea')"
+DESC_BOX = "document.querySelector('#panel textarea[aria-label=\"Description\"]')"
+EDIT_DESC = ("[...document.querySelectorAll('#panel button')]"
+             ".find((b) => b.title.startsWith('Edit the description') || b.textContent.includes('Add a description')).click()")
+NOTE_EDITOR = "document.querySelector('#panel textarea[aria-label=\"Edit note\"]')"
+CLOSE_NOTE_EDITOR = f"{NOTE_EDITOR}.dispatchEvent(new KeyboardEvent('keydown', {{ key: 'Escape', bubbles: true }}))"
+TOASTS = "document.querySelector('#toasts').innerText"
 ADD_NOTE = "[...document.querySelectorAll('#panel .note-form button')].find((b) => b.textContent.includes('Add note')).click()"
+PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
 
 
 class BrowserSmokeTests(unittest.TestCase):
@@ -295,6 +302,38 @@ class BrowserSmokeTests(unittest.TestCase):
         self.page.send("Input.insertText", text=text)
         self.page.js(ADD_NOTE)
 
+    def paste_image(self, box):
+        """Pastes a 1×1 PNG named "login form.png" into the text field that the expression `box` finds."""
+        self.page.js(f"""(() => {{
+            const dt = new DataTransfer(), bytes = Uint8Array.from(atob('{PNG}'), (c) => c.charCodeAt(0));
+            dt.items.add(new File([bytes], 'login form.png', {{ type: 'image/png' }}));
+            {box}.dispatchEvent(new ClipboardEvent('paste', {{ clipboardData: dt, bubbles: true, cancelable: true }}));
+        }})()""")
+
+    def open_task(self, tid):
+        self.page.js(f"location.hash = {json.dumps(tid)}")
+        self.until(f"the panel of {tid}", f"document.querySelector('#panel .cid')?.textContent === {json.dumps(tid)}")
+
+    def edit_note(self, i):
+        """Opens the editor of the open task's `i`-th note on screen, and returns its text."""
+        self.page.js(f"[...document.querySelectorAll('#panel button.note-btn')][{i}].click()")
+        return self.until(f"the editor of note {i}", f"{NOTE_EDITOR}?.value")
+
+    def hold_uploads(self):
+        """From now on, image uploads wait until let_upload_through()."""
+        self.held = []
+        self.page.on("Fetch.requestPaused", lambda p: self.held.append(p["requestId"]))
+        self.page.send("Fetch.enable", patterns=[{"urlPattern": "*/api/files"}])
+
+    def wait_for_upload(self):
+        def held():
+            self.page.logged()  # takes in the events that arrived meanwhile
+            return self.held
+        self.wait_for("the upload to start", held)
+
+    def let_upload_through(self):
+        self.page.post("Fetch.continueRequest", requestId=self.held.pop())
+
     def notes(self, tid):
         return [n["text"] for n in kanvas.find_task(kanvas.load_board(self.path), tid)["notes"]]
 
@@ -324,6 +363,404 @@ class BrowserSmokeTests(unittest.TestCase):
                    timeout=5)
         self.assertEqual(self.page.logged(), [])
 
+    def test_a_task_started_in_the_board_names_the_human_until_an_agent_takes_it_over(self):
+        self.load()
+        self.open_task("FE-04")
+        self.page.js("document.querySelector('#panel .now-actions button.primary').click()")
+        task = lambda: kanvas.find_task(kanvas.load_board(self.path), "FE-04")
+        self.wait_for("the start in kanvas.json", lambda: task()["state"] == "doing")
+        self.assertEqual(task()["started"]["by"], "human")
+        self.assertEqual(self.notes("FE-04"), ["Started in the board."])
+        foot = "document.querySelector('.card[data-id=\"FE-04\"] .card-foot')"
+        self.until("the human on the card", f"{foot}.innerText.includes('human') && !{foot}.querySelector('.live')")
+        self.until("the hint to hand it over", "document.querySelector('#panel .now').innerText.includes('You started it')")
+
+        self.cli("start", "FE-04", "-m", "Plan: add the toggle")
+        self.until("the agent on the card", f"{foot}.innerText.includes('smoke-test') && !!{foot}.querySelector('.live')")
+        self.until("the panel without the hint", "!document.querySelector('#panel .now').innerText.includes('You started it')")
+        self.assertEqual(self.page.logged(), [])
+
+    def card_menu(self, tid):
+        """Right-clicks the card of `tid` and returns its menu's text."""
+        card = f"document.querySelector('.card[data-id={json.dumps(tid)}]')"
+        self.page.js(f"""(() => {{ const r = {card}.getBoundingClientRect();
+            {card}.dispatchEvent(new MouseEvent('contextmenu', {{ bubbles: true, cancelable: true, clientX: r.left + 20, clientY: r.top + 10 }})); }})()""")
+        return self.until(f"the menu of {tid}", "document.querySelector('.ctx-menu')?.innerText")
+
+    def click_in_menu(self, text):
+        self.page.js(f"[...document.querySelectorAll('.ctx-menu button')].find((b) => b.innerText.includes({json.dumps(text)})).click()")
+
+    def test_the_card_menu_makes_yolo_stop_before_a_task_of_its_chain_and_do_it_again(self):
+        self.load()
+        self.assertIn("YOLO up to here…", self.card_menu("LN-02"))
+        self.click_in_menu("YOLO up to here")
+        self.until("the YOLO dialog", "!!document.querySelector('dialog.dlg .yolo-choices input[value=on]:checked')")
+        self.page.js("document.querySelector('dialog.dlg button[value=ok]').click()")
+        board = lambda: kanvas.load_board(self.path)
+        self.wait_for("YOLO in kanvas.json", lambda: kanvas.find_task(board(), "LN-02").get("yolo"))
+
+        menu = self.card_menu("FE-03")
+        self.assertIn("YOLO up to LN-02", menu)
+        pressed = "[...document.querySelectorAll('.ctx-menu .yolo-track button')].map((b) => b.innerText.trim() + ':' + b.getAttribute('aria-pressed'))"
+        self.assertEqual(self.page.js(pressed), ["Do it too:true", "Stop before:false"])
+        self.click_in_menu("Stop before")
+        self.wait_for("YOLO to stop before FE-03", lambda: kanvas.find_task(board(), "FE-03").get("yolo_before"))
+        cover = kanvas.yolo_cover(board())
+        self.assertNotIn("FE-03", cover)
+        self.assertEqual((cover["FE-02"], cover["LN-02"]), ("LN-02", "LN-02"))
+        self.until("the stop on the card", "document.querySelector('.card[data-id=\"FE-03\"]').classList.contains('yolo-stop')"
+                                           " && document.querySelector('.card[data-id=\"FE-03\"] .yolo-tag.stop')?.innerText.includes('STOP')")
+        self.card_menu("FE-03")
+        self.assertEqual(self.page.js(pressed), ["Do it too:false", "Stop before:true"])
+        self.click_in_menu("Do it too")
+        self.wait_for("FE-03 back in the chain", lambda: "yolo_before" not in kanvas.find_task(board(), "FE-03"))
+        self.assertEqual(kanvas.yolo_cover(board()).get("FE-03"), "LN-02")
+        self.assertEqual(self.page.logged(), [])
+
+    def open_other_board(self):
+        folder = os.path.join(self.dir, "other")
+        os.mkdir(folder)
+        path = os.path.join(folder, "kanvas.json")
+        shutil.copyfile(self.path, path)
+        base = self.url.rsplit("/demo/", 1)[0] + "/"
+        kanvas.join_running(base, path)
+        return path
+
+    def close_from_menu(self):
+        """Close the board from its menu and return what the dialog said."""
+        self.until("the close board menu item", """(() => {
+            const present = () => [...document.querySelectorAll('[role=menuitem]')].some(b => b.textContent === 'Close current board');
+            if (!present()) document.querySelector('.board-title').click();
+            return present();
+        })()""")
+        self.page.js("[...document.querySelectorAll('[role=menuitem]')].find(b => b.textContent === 'Close current board').click()")
+        self.until("the close dialog", "!!document.querySelector('dialog[open]')")
+        said = self.page.js("document.querySelector('dialog[open]').textContent")
+        self.page.js("document.querySelector('dialog[open] button[value=ok]').click()")
+        return said
+
+    def test_shortcuts_work_while_the_spacing_slider_has_focus(self):
+        self.load()
+        press = """(key) => {
+            const slider = document.querySelector('#spread'), e = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true });
+            slider.focus();
+            slider.dispatchEvent(e);
+            return e.defaultPrevented;
+        }"""
+        self.assertEqual(self.page.js("document.querySelector('#view-graph').getAttribute('aria-pressed')"), "true")
+        self.assertFalse(self.page.js(f"({press})('ArrowRight')"), "the arrow keys move the slider")
+        self.page.js(f"({press})('b')")
+        self.until("the board view", "document.querySelector('#view-board').getAttribute('aria-pressed') === 'true'")
+
+    def test_close_menu_switches_to_another_board_and_keeps_the_file(self):
+        self.open_other_board()
+        before = read(self.path)
+        self.load()
+        said = self.close_from_menu()
+        self.assertIn("The board file stays in your project", said)
+        self.assertNotIn("stop", said)
+        self.until("the other board", "location.pathname === '/other/' && !!document.querySelector('.board-title')")
+        self.assertEqual(read(self.path), before)
+        state = json.loads(read(os.path.join(self.dir, "state", "boards.json")))
+        self.assertEqual(state["boards"], [os.path.join(self.dir, "other", "kanvas.json")])
+        self.assertIsNone(self.server.poll())
+
+    def test_closing_the_last_board_stops_the_server_cleanly(self):
+        before = read(self.path)
+        self.load()
+        said = self.close_from_menu()
+        self.assertIn("It is the last open board, so Kanvas stops too.", said)
+        self.assertIn("Close board and stop Kanvas", said)
+        self.until("the board closed message", "document.querySelector('#lost').textContent.includes('This board was closed')")
+        self.assertEqual(self.server.wait(timeout=10), 0)
+        self.assertEqual(read(self.path), before)
+        self.assertEqual(json.loads(read(os.path.join(self.dir, "state", "boards.json")))["boards"], [])
+        self.assertEqual(self.page.js("document.querySelector('#sync .label').textContent"), "Board closed")
+
+    def test_a_board_closed_elsewhere_shows_a_link_to_open_boards(self):
+        self.open_other_board()
+        self.load()
+        port = urllib.parse.urlsplit(self.url).port
+        self.cli("close", "--port", str(port))
+        self.until("the closed board banner", "document.querySelector('#lost').textContent.includes('This board was closed')")
+        self.assertEqual(self.page.js("document.querySelector('#lost a').getAttribute('href')"), "/")
+        self.page.js("document.querySelector('#view-board').click()")
+        self.assertEqual(self.page.js("document.querySelector('#sync .label').textContent"), "Board closed")
+        self.assertIsNone(self.server.poll())
+
+    def test_closed_tab_does_not_switch_to_another_project_with_the_same_name(self):
+        self.open_other_board()
+        replacement = os.path.join(self.dir, "new", "demo", "kanvas.json")
+        os.makedirs(os.path.dirname(replacement))
+        shutil.copyfile(self.path, replacement)
+        before = read(replacement)
+        self.load("#BE-03")
+        port = urllib.parse.urlsplit(self.url).port
+        self.cli("close", "--port", str(port))
+        url, _ = kanvas.join_running(f"http://127.0.0.1:{port}/", replacement)
+        self.assertTrue(url.endswith("/demo-2/"), url)
+        self.until("the old tab to stay closed", "document.querySelector('#sync .label').textContent === 'Board closed'")
+        self.type_note("This belongs to the original board")
+        self.assertEqual(read(replacement), before)
+        self.assertEqual(self.page.js("location.pathname"), "/demo/")
+
+    def test_deleting_the_last_board_stops_without_a_browser_poll(self):
+        os.remove(self.path)
+        self.assertEqual(self.server.wait(timeout=10), 0)
+        self.assertEqual(json.loads(read(os.path.join(self.dir, "state", "boards.json")))["boards"], [])
+
+    def test_a_pasted_image_is_kept_next_to_the_board_and_shows_in_the_note(self):
+        self.load("#BE-03")
+        self.until("the panel of BE-03", "document.querySelector('#panel .cid')?.textContent === 'BE-03'")
+        self.page.js(f"{NOTE_BOX}.focus(); document.execCommand('insertText', false, 'Before:');")
+        self.paste_image(NOTE_BOX)
+        self.until("the note image preview", "document.querySelector('.note-form .image-preview img')?.complete")
+        self.assertEqual(self.page.js(f"{NOTE_BOX}.value"), "Before:")
+        self.assertFalse(os.path.exists(os.path.join(self.dir, "demo", "kanvas-files")))
+        self.page.js(ADD_NOTE)
+        text = self.wait_for("the note in kanvas.json", lambda: next((n for n in self.notes("BE-03") if 'kanvas-files/' in n), None))
+        self.assertRegex(text, r"^Before:\n!\[login form\]\(kanvas-files/[0-9a-f]{16}\.png\)$")
+        ref = re.search(r"\((.*)\)", text).group(1)
+        self.assertTrue(os.path.isfile(os.path.join(self.dir, "demo", ref)))
+        img = f"document.querySelector('#panel .md img[src=\"{ref}\"]')"
+        self.until("the image loaded in the panel", f"{img}?.complete && {img}.naturalWidth === 1")
+        self.page.js(f"{img}.click()")
+        self.until("the image at full size", "document.querySelector('dialog.lightbox[open] img')?.naturalWidth === 1")
+        self.page.js("document.querySelector('dialog.lightbox').click()")
+        self.until("the full-size image to close", "!document.querySelector('dialog.lightbox')")
+        self.assertEqual(self.page.logged(), [])
+
+    def test_new_task_previews_images_without_uploading_until_created(self):
+        self.load()
+        self.page.js("document.querySelector('#new-task').click()")
+        desc = "document.querySelector('dialog.dlg textarea[name=desc]')"
+        self.until("the new task form", f"{desc} !== null")
+        self.page.js("document.querySelector('dialog.dlg input[name=title]').value = 'Task with a preview'")
+        self.paste_image(desc)
+        self.until("the image preview", "document.querySelector('.image-preview img')?.complete")
+        self.assertEqual(self.page.js(f"{desc}.value"), "")
+        folder = os.path.join(self.dir, "demo", "kanvas-files")
+        self.assertFalse(os.path.exists(folder))
+        self.page.js("document.querySelector('.image-preview button').click()")
+        self.assertFalse(self.page.js("!!document.querySelector('.image-preview')"))
+        self.assertFalse(os.path.exists(folder))
+        self.paste_image(desc)
+        self.page.js("document.querySelector('dialog.dlg button[value=cancel]').click()")
+        self.until("the cancelled dialog to close", "!document.querySelector('dialog.dlg')")
+        self.assertFalse(os.path.exists(folder))
+
+        self.page.js("document.querySelector('#new-task').click()")
+        self.page.js("document.querySelector('dialog.dlg input[name=title]').value = 'Task with a preview'")
+        self.paste_image(desc)
+        self.until("the image preview again", "document.querySelector('.image-preview img')?.complete")
+        self.assertFalse(os.path.exists(folder))
+        self.page.js("document.querySelector('dialog.dlg button[value=ok]').click()")
+        task = self.wait_for("the task and its image", lambda: next((t for t in kanvas.load_board(self.path)['tasks']
+            if t['title'] == 'Task with a preview'), None))
+        ref = re.search(r'\((kanvas-files/[^)]+)\)', task['desc']).group(1)
+        self.assertTrue(os.path.isfile(os.path.join(self.dir, "demo", ref)))
+        self.until("the image displayed in the saved task", "document.querySelector('#panel .md img')?.naturalWidth === 1")
+
+    def test_new_task_keeps_image_and_text_when_upload_fails(self):
+        self.load()
+        self.page.js("document.querySelector('#new-task').click()")
+        desc = "document.querySelector('dialog.dlg textarea[name=desc]')"
+        self.page.js("document.querySelector('dialog.dlg input[name=title]').value = 'Retry image'")
+        self.page.js(f"{desc}.value = 'Keep this description'")
+        self.paste_image(desc)
+        self.hold_uploads()
+        self.page.js("document.querySelector('dialog.dlg button[value=ok]').click()")
+        self.wait_for_upload()
+        self.page.post("Fetch.failRequest", requestId=self.held.pop(), errorReason="Failed")
+        self.until("the upload error", f"{TOASTS}.includes('Cannot create task')")
+        self.assertEqual(self.page.js(f"{desc}.value"), 'Keep this description')
+        self.assertTrue(self.page.js("!!document.querySelector('dialog.dlg[open] .image-preview')"))
+        self.page.send("Fetch.disable")
+        self.page.js("document.querySelector('dialog.dlg button[value=ok]').click()")
+        self.wait_for("the task after retry", lambda: any(t['title'] == 'Retry image' and 'kanvas-files/' in t.get('desc', '')
+            for t in kanvas.load_board(self.path)['tasks']))
+
+    def test_an_image_that_finishes_uploading_after_another_task_opens_stays_with_its_task(self):
+        self.load("#BE-03")
+        self.open_task("BE-03")
+        self.hold_uploads()
+
+        # Saving a note while changing tasks still attaches it to the original task.
+        self.page.js(f"{NOTE_BOX}.focus(); document.execCommand('insertText', false, 'On BE-03:');")
+        self.paste_image(NOTE_BOX)
+        self.page.js(ADD_NOTE)
+        self.wait_for_upload()
+        # Leaving the page now would lose the image, which is in no editor yet.
+        leave = "(() => { const e = new Event('beforeunload', { cancelable: true }); dispatchEvent(e); return e.defaultPrevented; })()"
+        self.assertTrue(self.page.js(leave))
+        self.open_task("BE-02")
+        self.page.js(f"{NOTE_BOX}.focus(); document.execCommand('insertText', false, 'On BE-02');")
+        self.let_upload_through()
+        self.wait_for("the image saved on the original task", lambda: any('kanvas-files/' in n for n in self.notes("BE-03")))
+        self.assertEqual(self.page.js(f"{NOTE_BOX}.value"), "On BE-02")
+        self.open_task("BE-03")
+        self.until("the original draft cleared", f"{NOTE_BOX}.value === ''")
+        self.assertFalse(self.page.js("!!document.querySelector('.note-form .image-preview')"))
+
+        # The description editor keeps no draft once another task opens, so the image goes nowhere else.
+        self.page.js(EDIT_DESC)
+        self.until("the description editor of BE-03", f"!!{DESC_BOX}")
+        self.paste_image(DESC_BOX)
+        self.wait_for_upload()
+        self.open_task("BE-02")
+        self.page.js(EDIT_DESC)
+        self.until("the description editor of BE-02", f"!!{DESC_BOX}")
+        before = self.page.js(f"{DESC_BOX}.value")
+        self.let_upload_through()
+        closed = "The editor closed before the image was ready"
+        self.until("the image to land", f"{TOASTS}.includes({json.dumps(closed)}) || {DESC_BOX}.value !== {json.dumps(before)}")
+        self.assertEqual(self.page.js(f"{DESC_BOX}.value"), before)
+        self.assertIn(closed, self.page.js(TOASTS))
+        self.page.send("Fetch.disable")
+        self.assertEqual(self.page.logged(), [])
+
+    def test_note_edit_previews_cancel_and_save_on_the_original_note(self):
+        self.load("#BE-02")
+        older = self.edit_note(1)
+        self.paste_image(NOTE_EDITOR)
+        self.until("the edit preview", "document.querySelector('.note-edit .image-preview img')?.complete")
+        self.assertEqual(self.page.js(f"{NOTE_EDITOR}.value"), older)
+        self.assertFalse(os.path.exists(os.path.join(self.dir, "demo", "kanvas-files")))
+        self.page.js(CLOSE_NOTE_EDITOR)
+        self.until("the cancelled editor", f"!{NOTE_EDITOR}")
+        newer = self.edit_note(0)
+        self.assertFalse(self.page.js("!!document.querySelector('.note-edit .image-preview')"))
+        self.page.js(CLOSE_NOTE_EDITOR)
+        self.until("the editor closed", f"!{NOTE_EDITOR}")
+        self.assertEqual(self.edit_note(1), older)
+        self.assertFalse(self.page.js("!!document.querySelector('.note-edit .image-preview')"))
+        self.paste_image(NOTE_EDITOR)
+        self.hold_uploads()
+        self.page.js("document.querySelector('.note-edit button.primary').click()")
+        self.wait_for_upload()
+        self.open_task("BE-03")
+        self.let_upload_through()
+        self.wait_for("the image saved on the edited note", lambda: any(n.startswith(older) and 'kanvas-files/' in n for n in self.notes("BE-02")))
+        self.assertIn(newer, self.notes("BE-02"))
+        self.assertFalse(any('kanvas-files/' in n for n in self.notes("BE-03")))
+        self.page.send("Fetch.disable")
+        self.assertEqual(self.page.logged(), [])
+
+    def test_note_previews_survive_switching_tasks_and_can_be_removed_or_cancelled(self):
+        self.load("#BE-03")
+        self.paste_image(NOTE_BOX)
+        self.until("the image-only note draft", "document.querySelector('.note-form.filled .image-preview img')?.complete")
+        self.assertTrue(self.page.js("(() => { const e = new Event('beforeunload', { cancelable: true }); dispatchEvent(e); return e.defaultPrevented; })()"))
+        self.open_task("BE-02")
+        self.assertFalse(self.page.js("!!document.querySelector('.note-form .image-preview')"))
+        self.cli("note", "BE-03", "An agent update while the preview is unsaved")
+        self.open_task("BE-03")
+        self.until("the retained image preview", "document.querySelector('.note-form .image-preview img')?.complete")
+        self.until("the agent update", "document.querySelector('#panel').innerText.includes('An agent update while the preview is unsaved')")
+        self.page.js("document.querySelector('.note-form .image-preview button').click()")
+        self.assertFalse(self.page.js("!!document.querySelector('.note-form .image-preview')"))
+        self.paste_image(NOTE_BOX)
+        self.page.js("[...document.querySelectorAll('.note-form button')].find(b => b.textContent === 'Cancel').click()")
+        self.assertFalse(self.page.js("!!document.querySelector('.note-form .image-preview')"))
+        self.assertEqual(self.page.js(f"{NOTE_BOX}.value"), "")
+        self.assertFalse(os.path.exists(os.path.join(self.dir, "demo", "kanvas-files")))
+        # An image-only note is also a valid note.
+        self.paste_image(NOTE_BOX)
+        self.page.js(ADD_NOTE)
+        self.wait_for("the image-only note", lambda: any(n.startswith('![login form]') for n in self.notes("BE-03")))
+        self.until("the saved preview cleared", "!document.querySelector('.note-form .image-preview')")
+        self.assertEqual(self.page.logged(), [])
+
+    def test_dropped_note_image_saves_once_with_ctrl_enter(self):
+        self.load("#BE-03")
+        self.page.js(f"""(() => {{
+            const dt = new DataTransfer(), bytes = Uint8Array.from(atob('{PNG}'), c => c.charCodeAt(0));
+            dt.items.add(new File([bytes], 'dropped.png', {{ type: 'image/png' }}));
+            {NOTE_BOX}.dispatchEvent(new DragEvent('drop', {{ dataTransfer: dt, bubbles: true, cancelable: true }}));
+        }})()""")
+        self.until("the dropped image preview", "document.querySelector('.note-form .image-preview img')?.complete")
+        self.assertFalse(os.path.exists(os.path.join(self.dir, "demo", "kanvas-files")))
+        self.page.js(f"""(() => {{
+            const box = {NOTE_BOX};
+            for (let i = 0; i < 2; i++) box.dispatchEvent(new KeyboardEvent('keydown', {{ key: 'Enter', ctrlKey: true, bubbles: true }}));
+        }})()""")
+        self.wait_for("the dropped image saved", lambda: any('![dropped]' in n for n in self.notes("BE-03")))
+        self.until("the draft cleared", "!document.querySelector('.note-form .image-preview')")
+        self.assertEqual(len([n for n in self.notes("BE-03") if '![dropped]' in n]), 1)
+        self.assertEqual(self.page.logged(), [])
+
+    def test_note_upload_failure_keeps_preview_and_text_for_retry(self):
+        self.load("#BE-03")
+        self.page.js(f"{NOTE_BOX}.focus(); document.execCommand('insertText', false, 'Keep this note');")
+        self.paste_image(NOTE_BOX)
+        self.hold_uploads()
+        self.page.js(ADD_NOTE)
+        self.wait_for_upload()
+        self.page.post("Fetch.failRequest", requestId=self.held.pop(), errorReason="Failed")
+        self.until("the upload failure", f"{TOASTS}.includes('Cannot add note')")
+        self.assertEqual(self.page.js(f"{NOTE_BOX}.value"), "Keep this note")
+        self.assertTrue(self.page.js("!!document.querySelector('.note-form .image-preview')"))
+        self.page.send("Fetch.disable")
+        self.page.js(ADD_NOTE)
+        text = self.wait_for("the note after retry", lambda: next((n for n in self.notes("BE-03") if n.startswith('Keep this note')), None))
+        self.assertEqual(text.count('![login form]'), 1)
+
+    def test_new_note_failed_board_save_keeps_images_after_switching_tasks(self):
+        self.load("#BE-03")
+        self.paste_image(NOTE_BOX)
+        held = []
+        self.page.on("Fetch.requestPaused", lambda p: held.append(p["requestId"])
+                     if p["request"]["method"] == "PUT" else self.page.post("Fetch.continueRequest", requestId=p["requestId"]))
+        self.page.send("Fetch.enable", patterns=[{"urlPattern": "*/api/board"}])
+        self.page.js(ADD_NOTE)
+        self.wait_for("the board save", lambda: (self.page.logged(), held)[1])
+        self.open_task("BE-02")
+        self.page.js(f"{NOTE_BOX}.focus(); document.execCommand('insertText', false, 'Another draft');")
+        self.page.post("Fetch.failRequest", requestId=held.pop(), errorReason="Failed")
+        self.until("the failed save", f"{TOASTS}.includes('Not saved:')")
+        self.assertEqual(self.page.js(f"{NOTE_BOX}.value"), "Another draft")
+        self.page.send("Fetch.disable")
+        self.open_task("BE-03")
+        self.until("the image preview retained", "!!document.querySelector('.note-form .image-preview') && !document.querySelector('.note-form button.primary').disabled")
+        self.page.js(ADD_NOTE)
+        text = self.wait_for("the image note after retry", lambda: next((n for n in self.notes("BE-03") if 'kanvas-files/' in n), None))
+        self.assertEqual(text.count('![login form]'), 1)
+        self.assertEqual(len([n for n in self.notes("BE-03") if 'kanvas-files/' in n]), 1)
+
+    def test_note_edit_upload_failure_keeps_images_and_text(self):
+        self.load("#BE-02")
+        original = self.edit_note(0)
+        self.paste_image(NOTE_EDITOR)
+        self.hold_uploads()
+        self.page.js("document.querySelector('.note-edit button.primary').click()")
+        self.wait_for_upload()
+        self.page.post("Fetch.failRequest", requestId=self.held.pop(), errorReason="Failed")
+        self.until("the edit upload failure", f"{TOASTS}.includes('Cannot save note')")
+        self.assertEqual(self.page.js(f"{NOTE_EDITOR}.value"), original)
+        self.assertTrue(self.page.js("!!document.querySelector('.note-edit .image-preview')"))
+        self.page.send("Fetch.disable")
+        self.page.js("document.querySelector('.note-edit button.primary').click()")
+        text = self.wait_for("the edited note after retry", lambda: next((n for n in self.notes("BE-02") if 'kanvas-files/' in n), None))
+        self.assertEqual(text.count('![login form]'), 1)
+
+    def test_note_edit_failed_board_save_keeps_its_preview_for_retry(self):
+        self.load("#BE-02")
+        original = self.edit_note(0)
+        self.paste_image(NOTE_EDITOR)
+        self.page.on("Fetch.requestPaused", lambda p: self.page.post("Fetch.failRequest", requestId=p["requestId"], errorReason="Failed")
+                     if p["request"]["method"] == "PUT" else self.page.post("Fetch.continueRequest", requestId=p["requestId"]))
+        self.page.send("Fetch.enable", patterns=[{"urlPattern": "*/api/board"}])
+        self.page.js("document.querySelector('.note-edit button.primary').click()")
+        self.until("the save failure", f"{TOASTS}.includes('Not saved:')")
+        self.until("the preview restored to the editor", f"{NOTE_EDITOR}?.value === {json.dumps(original)} && !!document.querySelector('.note-edit .image-preview')")
+        self.assertIn(original, self.notes("BE-02"))
+        self.page.send("Fetch.disable")
+        self.until("the retry controls", "!document.querySelector('.note-edit .row-end').inert")
+        self.page.js("document.querySelector('.note-edit button.primary').click()")
+        text = self.wait_for("the edited note after retry", lambda: next((n for n in self.notes("BE-02") if 'kanvas-files/' in n), None))
+        self.assertEqual(text.count('![login form]'), 1)
+        self.until("the editor closed after success", f"!{NOTE_EDITOR}")
+
     def test_a_failed_save_gives_the_typed_note_back(self):
         self.load("#BE-03")
         self.until("the panel of BE-03", "document.querySelector('#panel .cid')?.textContent === 'BE-03'")
@@ -342,7 +779,8 @@ class BrowserSmokeTests(unittest.TestCase):
         self.page.send("Fetch.enable", patterns=[{"urlPattern": "*/api/board"}])
         note = "A note typed while saving fails."
         self.type_note(note)
-        self.until("the note back in its box", f"{NOTE_BOX}.value === {json.dumps(note)}")
+        self.until("the save failure", f"{TOASTS}.includes('Not saved: the disk is full')")
+        self.until("the note back in its box", f"{NOTE_BOX}.value === {json.dumps(note)} && !document.querySelector('.note-form button.primary').disabled")
         self.assertIn("Not saved: the disk is full", self.page.js("document.querySelector('#toasts').innerText"))
         self.assertEqual(self.notes("BE-03"), before)
         self.page.send("Fetch.disable")
