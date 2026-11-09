@@ -444,6 +444,16 @@ dialog.dlg::backdrop { background: rgb(10 12 18 / .38); backdrop-filter: blur(2p
 .field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); font-weight: 600; }
 .dlg .field input, .dlg .field select, .dlg .field textarea { font-weight: 400; color: var(--text); font-size: 14px; }
 .dlg .field .hint { font-weight: 400; color: var(--faint); }
+.image-composer { border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
+.image-composer:focus-within { border-color: var(--accent); outline: 2px solid color-mix(in srgb, var(--accent) 45%, transparent); outline-offset: 1px; }
+.dlg .field .image-composer textarea { display: block; width: 100%; border: 0; background: transparent; resize: vertical; box-shadow: none; }
+.dlg .field .image-composer textarea:focus { outline: none; }
+.image-previews { display: flex; flex-wrap: wrap; gap: 8px; padding: 8px 8px 0; }
+.image-previews:empty { display: none; }
+.image-preview { position: relative; width: 88px; height: 88px; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: var(--surface-2); }
+.image-preview img { width: 100%; height: 100%; object-fit: cover; }
+.image-preview button { position: absolute; top: 4px; right: 4px; display: grid; place-items: center; width: 24px; height: 24px; min-height: 0; padding: 0; border-radius: 50%; background: var(--surface); color: var(--text); box-shadow: var(--shadow); }
+.image-preview button .icon svg { width: 14px; height: 14px; }
 .dlg .check { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); cursor: pointer; width: fit-content; }
 .dlg .check input { margin: 0; padding: 0; width: 15px; height: 15px; accent-color: var(--accent); }
 .dlg button.link { border: 0; background: none; padding: 0; color: var(--accent); font: inherit; cursor: pointer; text-decoration: underline; }
@@ -4299,12 +4309,35 @@ async function removeMany(tasks) {
 
 // Dialogs ---------------------------------------------------------------------
 
-function modal(title, content, { ok = "Save", danger = false, cancel = "Cancel", okClass = "" } = {}) {
+function modal(title, content, { ok = "Save", danger = false, cancel = "Cancel", okClass = "", beforeConfirm = null } = {}) {
   return new Promise((resolve) => {
     const okBtn = h("button", { value: "ok", class: okClass || (danger ? "danger primary" : "primary") }, ok);
     const form = h("form", { method: "dialog" }, h("h3", {}, title), content,
       h("div", { class: "dlg-actions" }, okBtn, cancel ? h("button", { value: "cancel", formnovalidate: true }, cancel) : null));
     const dlg = h("dialog", { class: "dlg", tabindex: "-1" }, form);
+    let busy = false;
+    dlg.addEventListener("cancel", (e) => { if (busy) e.preventDefault(); });
+    form.addEventListener("submit", async (e) => {
+      if (!beforeConfirm || e.submitter !== okBtn) return;
+      e.preventDefault();
+      if (busy) return;
+      busy = true;
+      form.inert = true;
+      okBtn.textContent = "Creating…";
+      uploads++;
+      try {
+        await beforeConfirm();
+        form.inert = false;
+        dlg.close("ok");
+      } catch (err) {
+        toast(`Cannot create task: ${err.message}`, "error");
+      } finally {
+        uploads--;
+        form.inert = false;
+        okBtn.textContent = ok;
+        busy = false;
+      }
+    });
     form.addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); form.requestSubmit(okBtn); } });
     // Pressing a button leaves the focus where it is, so a field keeps its list (and the phone its keyboard) until the tap has landed.
     form.addEventListener("mousedown", (e) => { if (e.target.closest("button")) e.preventDefault(); });
@@ -4588,14 +4621,16 @@ async function newTaskDialog(group, { deps, blocks = [], title = "", desc = "" }
   };
   where = h("p", { class: "dlg-where" });
   sayWhere();
+  const images = imageComposer(desc);
   const data = await modal("New task", [
     where,
     h("label", { class: "field" }, "Title", h("input", { name: "title", required: true, autocomplete: "off", value: title, placeholder: "What needs to happen?" })),
     h("label", { class: "field" }, "Group", groupField),
-    h("label", { class: "field" }, h("span", {}, "Description ", h("span", { class: "hint" }, "Markdown")), h("textarea", { name: "desc", rows: 4, value: desc })),
+    h("div", { class: "field" }, h("label", { for: "new-task-desc" }, "Description ", h("span", { class: "hint" }, "Markdown")), images.el),
     h("div", { class: "field" }, h("span", {}, "Blocked by ", h("span", { class: "hint" }, "must be done first")), depPick.el),
     h("div", { class: "field" }, h("span", {}, "Blocks ", h("span", { class: "hint" }, "wait for this task")), blockPick.el),
-  ], { ok: "Create task" });
+  ], { ok: "Create task", beforeConfirm: () => images.upload() });
+  images.dispose();
   if (!data) return;
   const out = {}, f = { title: data.get("title").replace(/\s+/g, " ").trim(), group: data.get("group"), desc: data.get("desc").trim(), deps: depPick.ids, blocks: blockPick.ids };
   const ok = await commit(ops.addTask(f, out), { onFail: () => newTaskDialog(f.group, f) });
@@ -5475,6 +5510,49 @@ const imageFiles = (dt) => [...(dt && dt.files) || []].filter((f) => f.type.star
 let uploads = 0;
 const takesImages = (el) => el instanceof HTMLTextAreaElement && !el.readOnly && !el.disabled && !el.matches(".p-title");
 
+// New-task images stay in the browser until the human creates the task. The saved description uses the same
+// Markdown references as the other editors, so agents and snapshots can read it too.
+function imageComposer(desc) {
+  const files = [], previews = h("div", { class: "image-previews" });
+  const ta = h("textarea", { id: "new-task-desc", name: "desc", rows: 4, value: desc });
+  const add = (incoming) => {
+    if (!store || !store.upload || store.readOnly) { toast("Images need the board opened through kanvas serve", "error"); return; }
+    for (const file of incoming) {
+      if (!IMAGE_TYPES.includes(file.type)) { toast("Only PNG, JPEG, GIF and WebP images can be attached", "error"); continue; }
+      if (file.size > 10 * 1024 * 1024) { toast("Images can be 10 MB at most", "error"); continue; }
+      const item = { file, url: URL.createObjectURL(file), ref: null };
+      const name = file.name || "image";
+      const tile = h("div", { class: "image-preview" }, h("img", { src: item.url, alt: name }),
+        h("button", { type: "button", title: `Remove ${name}`, "aria-label": `Remove ${name}`, onclick: () => {
+          files.splice(files.indexOf(item), 1); URL.revokeObjectURL(item.url); tile.remove();
+        } }, icon("x")));
+      files.push(item);
+      previews.append(tile);
+    }
+  };
+  for (const [event, transfer] of [["paste", "clipboardData"], ["drop", "dataTransfer"]]) {
+    ta.addEventListener(event, (e) => {
+      const incoming = imageFiles(e[transfer]);
+      if (!incoming.length) return;
+      e.preventDefault(); e.stopPropagation(); add(incoming);
+    });
+  }
+  const el = h("div", { class: "image-composer" }, previews, ta);
+  return {
+    el,
+    async upload() {
+      const marks = [];
+      for (const item of files) {
+        if (!item.ref) item.ref = await store.upload(item.file);
+        const alt = (item.file.name || "").replace(/\.[^.]*$/, "").replace(/[[\]]/g, "") || "image";
+        marks.push(`![${alt}](${item.ref})`);
+      }
+      if (marks.length) ta.value += onOwnLines(ta.value, ta.value.length, ta.value.length, marks.join("\n"));
+    },
+    dispose() { for (const item of files) URL.revokeObjectURL(item.url); },
+  };
+}
+
 async function insertImages(ta, files) {
   if (!store || !store.upload || store.readOnly) {
     toast("Images need the board opened through kanvas serve", "error");
@@ -5829,6 +5907,7 @@ function toggleDone() {
 function unsaved() {
   if (!store || store.readOnly) return false;
   if (pending || uploads || (store.kind === "memory" && store.dirty)) return true;
+  if (document.querySelector("dialog .image-preview")) return true;
   const t = ui.selected && get(ui.selected), filled = (el) => !!el.value.trim();
   if ([...drafts.note].some(([id, text]) => text.trim() && get(id))) return true;
   if ([...drafts.back.keys()].some((k) => IX.has(k)) || drafts.title != null || drafts.boardTitle != null) return true;
