@@ -297,6 +297,43 @@ class BrowserSmokeTests(unittest.TestCase):
         self.page.send("Page.navigate", url=self.url + hash)
         self.until("the board's cards", "document.readyState === 'complete' && !!document.querySelector('[data-id=\"BE-03\"]')")
 
+    def test_completed_work_stays_discoverable_in_both_views(self):
+        # Many completed tasks, including one beyond the compact preview.
+        data = json.loads(read(self.path))
+        data['tasks'] += [dict(id=f'RS-{n:02}', title=f'Completed experiment {n}',
+                               state='done', group='RS', notes=[]) for n in range(3, 15)]
+        with open(self.path, 'w', encoding='utf-8') as out:
+            json.dump(data, out)
+        before = read(self.path)
+        self.load()
+        self.page.js("document.querySelector('#view-board').click()")
+        self.assertEqual(self.page.js("document.querySelectorAll('.col.s-done .kcard').length"), 5)
+        self.assertIn('16', self.page.js("document.querySelector('.done-summary').textContent"))
+        self.page.js("document.querySelector('.done-summary button').click()")
+        self.assertEqual(self.page.js("document.querySelectorAll('.col.s-done .kcard').length"), 16)
+        self.page.js("document.querySelector('#view-graph').click()")
+        self.assertTrue(self.page.js("!!document.querySelector('#cards [data-id=\"RS-14\"]')"))
+        self.page.js("document.querySelector('#hide-done').click()")
+        self.assertFalse(self.page.js("!!document.querySelector('#cards [data-id=\"RS-14\"]')"))
+        self.page.js("document.querySelector('#search').value = 'RS-14'; document.querySelector('#search').dispatchEvent(new Event('input'))")
+        self.assertTrue(self.page.js("!!document.querySelector('#cards [data-id=\"RS-14\"]')"))
+        self.page.js("document.querySelector('#view-board').click()")
+        self.assertEqual(self.page.js("document.querySelectorAll('.col.s-done .kcard').length"), 1)
+        self.page.js("document.querySelector('#search').value = ''; document.querySelector('#search').dispatchEvent(new Event('input'))")
+        self.assertEqual(self.page.js("document.querySelectorAll('.col.s-done .kcard').length"), 5)
+        self.open_task('RS-14')
+        self.assertTrue(self.page.js("!!document.querySelector('.kcard[data-id=\"RS-14\"]')"))
+        self.page.send('Emulation.setDeviceMetricsOverride', width=390, height=844, deviceScaleFactor=1, mobile=True)
+        self.assertTrue(self.page.js('document.documentElement.scrollWidth <= innerWidth'))
+        self.assertEqual(read(self.path), before, 'Display controls must not write to the shared board')
+        self.page.send('Page.navigate', url=self.url)
+        self.until('compact view after reload', "document.querySelectorAll('.col.s-done .kcard').length === 5")
+        self.cli('note', 'BE-03', 'Live update while completed tasks are compact')
+        self.open_task('BE-03')
+        self.until('live note', "document.querySelector('#panel').textContent.includes('Live update while completed tasks are compact')")
+        self.assertEqual(self.page.js("document.querySelectorAll('.col.s-done .kcard').length"), 5)
+        self.assertEqual(self.page.logged(), [])
+
     def type_note(self, text):
         self.page.js(f"{NOTE_BOX}.focus()")
         self.page.send("Input.insertText", text=text)
