@@ -106,7 +106,7 @@ header.top > .tools > button, header.top > #help, .board-title { height: 30px; }
 #group-filter > .icon:last-child svg { width: 13px; height: 13px; }
 #group-filter > .icon:last-child { color: var(--faint); margin-left: -2px; }
 #group-filter.on { color: var(--text); background: color-mix(in srgb, var(--g) 12%, var(--surface)); border-color: color-mix(in srgb, var(--g) 60%, transparent); }
-#hide-done { flex-shrink: 0; width: 30px; min-width: 30px; height: 30px; justify-content: center; color: var(--muted); }
+#hide-done { flex-shrink: 0; width: 58px; min-width: 58px; height: 30px; justify-content: center; color: var(--muted); }
 #hide-done.on { color: var(--text); background: color-mix(in srgb, var(--done) 12%, var(--surface)); border-color: color-mix(in srgb, var(--done) 60%, transparent); }
 #group-filter.menu-target { background: var(--surface-2); border-color: var(--border-strong); }
 .gf-body { display: flex; flex-direction: column; }
@@ -2732,7 +2732,7 @@ function renderHeader() {
   hd.setAttribute("aria-pressed", String(!!prefs.expandDone));
   hd.dataset.tip = prefs.expandDone ? "Compact completed work" : `Show all ${counts.done} completed tasks`;
   hd.setAttribute("aria-label", hd.dataset.tip);
-  hd.replaceChildren(icon("check"));
+  hd.replaceChildren(h("span", {}, "Done"));
 
   const total = board.tasks.length || 1;
   $("#progress").replaceChildren(...["done", "review", "doing", "todo", "blocked", "proposed"].map((s) =>
