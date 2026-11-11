@@ -106,8 +106,7 @@ header.top > .tools > button, header.top > #help, .board-title { height: 30px; }
 #group-filter > .icon:last-child svg { width: 13px; height: 13px; }
 #group-filter > .icon:last-child { color: var(--faint); margin-left: -2px; }
 #group-filter.on { color: var(--text); background: color-mix(in srgb, var(--g) 12%, var(--surface)); border-color: color-mix(in srgb, var(--g) 60%, transparent); }
-#hide-done { height: 30px; min-width: 30px; justify-content: center; color: var(--muted); }
-#hide-done.on { color: var(--text); background: color-mix(in srgb, var(--done) 12%, var(--surface)); border-color: color-mix(in srgb, var(--done) 60%, transparent); }
+#hide-done { flex-shrink: 0; width: 76px; min-width: 76px; height: 30px; justify-content: center; color: var(--muted); }
 #group-filter.menu-target { background: var(--surface-2); border-color: var(--border-strong); }
 .gf-body { display: flex; flex-direction: column; }
 .gf-body .count { color: var(--faint); font-size: 12px; font-variant-numeric: tabular-nums; }
@@ -296,6 +295,9 @@ button.yolo-go, button.yolo-go:hover { border: 0; color: var(--yolo-ink); font-w
 .col-head .count { color: var(--muted); font-weight: 500; font-variant-numeric: tabular-nums; }
 .col-head button { margin-left: auto; padding: 2px 8px; font-size: 12px; }
 .col-body { padding: 4px 10px 12px; display: flex; flex-direction: column; gap: 8px; overflow-y: auto; flex: 1; }
+.done-summary { display: grid; gap: 8px; padding: 12px; border: 1px solid var(--border); border-radius: 8px; color: var(--muted); font-size: 12px; }
+  .done-summary button { padding: 7px 10px; }
+
 .col-empty { color: var(--faint); font-size: 12.5px; text-align: center; padding: 18px 6px; border: 1.5px dashed var(--border); border-radius: 8px; }
 .kcard { position: relative; padding: 9px 11px; border-radius: 8px; background: color-mix(in srgb, var(--c) 8%, var(--surface)); border: 1.5px solid var(--c); box-shadow: var(--shadow); cursor: pointer; display: flex; flex-direction: column; gap: 4px; }
 .kcard:hover { box-shadow: var(--shadow-lg); }
@@ -810,7 +812,7 @@ dialog.dlg[open]:has(> form > .help) { display: flex; flex-direction: column; }
       <button id="view-graph" data-icon="graph" data-tip="Dependency graph" data-key="G" aria-label="Graph"><span class="lbl">Graph</span></button>
       <button id="view-board" data-icon="columns" data-tip="Board by state" data-key="B" aria-label="Board"><span class="lbl">Board</span></button>
     </div>
-    <button id="display" data-icon="sliders" data-tip="Direction, card order, finished tasks and theme" aria-haspopup="dialog" aria-expanded="false" aria-label="Display options"><span class="lbl">Display</span></button>
+    <button id="display" data-icon="sliders" data-tip="Direction, card order, done tasks and theme" aria-haspopup="dialog" aria-expanded="false" aria-label="Display options"><span class="lbl">Display</span></button>
     <button id="inbox" aria-haspopup="dialog" aria-expanded="false" hidden></button>
   </div>
   <div class="tools edit-only">
@@ -2039,7 +2041,7 @@ const phone = matchMedia("(max-width: 640px), (pointer: coarse) and (max-device-
 const coarse = matchMedia("(pointer: coarse)");
 // The view chosen on wider screens, and the one chosen on phones, which start on the board.
 const prefs = (() => {
-  const defaults = { view: "graph", phoneView: "board", orient: "horizontal", arrange: "auto", hideDone: false, theme: null, levelGap: 70 };
+  const defaults = { view: "graph", phoneView: "board", orient: "horizontal", arrange: "auto", expandDone: false, theme: null, levelGap: 70 };
   try { return Object.assign(defaults, JSON.parse(localStorage.getItem("kanvas:prefs") || "{}")); } catch (e) { return defaults; }
 })();
 const savePrefs = () => { try { localStorage.setItem("kanvas:prefs", JSON.stringify(prefs)); } catch (e) { /* storage disabled */ } };
@@ -2693,23 +2695,19 @@ function renderHeader() {
   const counts = Object.fromEntries(VIEW_STATES.map((s) => [s, 0]));
   for (const t of board.tasks) counts[vstate(t)] = (counts[vstate(t)] || 0) + 1;
   $("#chips").replaceChildren(...VIEW_STATES.map((s) => {
-    const hidden = s === "done" && prefs.hideDone;
     const on = ui.states.has(s);
     return h("button", {
-      class: `schip s-${s}${on ? " on" : ""}${counts[s] ? "" : " zero"}${hidden ? " off" : ""}`,
-      "data-tip": hidden ? `${counts[s]} finished task${counts[s] === 1 ? " is" : "s are"} hidden. Click to show them.`
-        : on ? `Showing only ${LABEL[s].toLowerCase()} tasks. Click to show all.` : `Show only ${LABEL[s].toLowerCase()} tasks. Shift+click to add to the filter.`,
-      "data-key": hidden ? "H" : null,
+      class: `schip s-${s}${on ? " on" : ""}${counts[s] ? "" : " zero"}`,
+      "data-tip": on ? `Showing only ${LABEL[s].toLowerCase()} tasks. Click to show all.` : `Show only ${LABEL[s].toLowerCase()} tasks. Shift+click to add to the filter.`,
       "aria-pressed": on ? "true" : "false",
       "aria-label": `${LABEL[s]}: ${counts[s]}`,
       onclick: (e) => {
-        if (hidden) return toggleDone();
         if (e.shiftKey) on ? ui.states.delete(s) : ui.states.add(s);
         else if (ui.states.size === 1 && on) ui.states.clear();
         else ui.states = new Set([s]);
         render();
       },
-    }, h("span", { class: "dot" }), hidden ? icon("eye-off") : null, h("span", { class: "lbl" }, LABEL[s]), h("b", {}, counts[s]));
+    }, h("span", { class: "dot" }), h("span", { class: "lbl" }, LABEL[s]), h("b", {}, counts[s]));
   }));
 
   for (const id of ui.groups) if (id && !board.groups.some((g) => g.id === id)) ui.groups.delete(id);
@@ -2729,11 +2727,11 @@ function renderHeader() {
 
   renderInboxButton();
   const hd = $("#hide-done");
-  hd.classList.toggle("on", !!prefs.hideDone);
-  hd.setAttribute("aria-pressed", String(!!prefs.hideDone));
-  hd.dataset.tip = prefs.hideDone ? `${counts.done} finished task${counts.done === 1 ? " is" : "s are"} hidden. Click to show them.` : "Hide finished tasks";
-  hd.setAttribute("aria-label", "Hide finished tasks");
-  hd.replaceChildren(icon(prefs.hideDone ? "eye-off" : "eye"));
+  hd.setAttribute("aria-pressed", String(!!prefs.expandDone));
+  hd.dataset.tip = prefs.expandDone ? "Compact done tasks" : `Show all ${counts.done} done tasks`;
+  hd.setAttribute("aria-label", "Show all done tasks");
+  // The eye is open while every done task shows, and crossed out while they are compacted.
+  hd.replaceChildren(icon(prefs.expandDone ? "eye" : "eye-off"), h("span", {}, "Done"));
 
   const total = board.tasks.length || 1;
   $("#progress").replaceChildren(...["done", "review", "doing", "todo", "blocked", "proposed"].map((s) =>
@@ -2859,14 +2857,21 @@ function fillStub(el, s, lane) {
   if (!s.open && el.dataset.folded && +el.dataset.folded < n) { el.classList.remove("flash"); void el.offsetWidth; el.classList.add("flash"); }
   el.dataset.folded = s.open ? "" : n;
   el.dataset.group = s.group || "";
+  el.disabled = !!ui.search.trim();
   el.classList.toggle("open", s.open);
-  el.setAttribute("aria-label", `${n}${more} done task${n === 1 ? "" : "s"} in ${lane}, ${s.open ? "hide" : "show"} them`);
-  el.replaceChildren(h("span", { class: "dot s-done" }), h("span", { class: "stub-n" }, `${n}${more} done`), h("span", { class: "stub-do" }, s.open ? "Hide" : "Show"));
+  el.setAttribute("aria-label", `${n}${more} done task${n === 1 ? "" : "s"} in ${lane}, ${s.open ? "collapse" : "expand"} them`);
+  el.replaceChildren(h("span", { class: "dot s-done" }), h("span", { class: "stub-n" }, `${n}${more} done`), h("span", { class: "stub-do" }, s.open ? "Collapse" : "Expand"));
 }
 
 // Opens or folds a lane's finished tasks. The stub stays where it is on screen.
 function toggleFold(group) {
   const k = `done:${group || ""}`, stub = () => lastLayout.stubs.find((s) => s.key === k), was = stub();
+  if (ui.search.trim()) return;
+  if (prefs.expandDone) {
+    for (const t of board.tasks) unfolded.add(laneId(t) || "");
+    prefs.expandDone = false;
+    savePrefs();
+  }
   if (!unfolded.delete(group || "")) unfolded.add(group || "");
   render();
   const now = stub();
@@ -2876,18 +2881,24 @@ function toggleFold(group) {
 // The layout only changes with what it reads, so selecting or annotating tasks reuses it.
 let layoutKey = "";
 const inPickedGroups = (t) => !ui.groups.size || ui.groups.has(laneId(t) || "");
-// The graph leaves out finished tasks while they are hidden, and the groups the filter leaves out.
-const graphTasks = () => board.tasks.filter((t) => !(prefs.hideDone && t.state === "done") && inPickedGroups(t));
+// Completed tasks remain discoverable through summaries and search.
+const graphTasks = () => board.tasks.filter((t) => inPickedGroups(t));
 // Lanes whose finished tasks the human opened, for this visit: group ids, "" for Ungrouped.
 const unfolded = new Set();
 const stubEls = new Map();
 // The graph's cards, less the finished tasks folded into stubs. The selected task stays in sight, so links to it land.
-const graphFold = () => foldDone(graphTasks(), board, unfolded, ui.selected);
+const graphFold = () => {
+  const tasks = graphTasks();
+  // Search reveals completed matches even in a compact lane, without changing the preference.
+  const searching = !!ui.search.trim();
+  const visible = searching ? tasks.filter((t) => t.state !== "done" || matches(t) || same(t.id, ui.selected)) : tasks;
+  return foldDone(visible, board, prefs.expandDone || searching ? new Set(tasks.map((t) => laneId(t) || "")) : unfolded, ui.selected);
+};
 function renderGraph() {
   const { tasks, stubs } = graphFold();
-  const opts = { vertical: prefs.orient === "vertical", levelGap: prefs.levelGap, manual: prefs.arrange === "manual", emptyLanes: !prefs.hideDone && !ui.groups.size, stubs };
+  const opts = { vertical: prefs.orient === "vertical", levelGap: prefs.levelGap, manual: prefs.arrange === "manual", emptyLanes: !ui.groups.size, stubs };
   // Lane counts include hidden finished tasks, so every task is part of the key.
-  const k = JSON.stringify([opts, prefs.hideDone, [...ui.groups], board.groups.map((g) => [g.id, g.name]), board.tasks.map((t) => [t.id, t.group, t.deps, t.state])]);
+  const k = JSON.stringify([opts, tasks.map((t) => t.id), prefs.expandDone, ui.search, [...ui.states], [...ui.groups], board.groups.map((g) => [g.id, g.name]), board.tasks.map((t) => [t.id, t.group, t.deps, t.state])]);
   const L = k === layoutKey && lastLayout ? lastLayout : layout(tasks, board, opts);
   layoutKey = k;
   lastLayout = L;
@@ -2963,7 +2974,7 @@ function renderGraph() {
     empty.replaceChildren(h("div", {},
       h("h2", {}, !board.tasks.length ? "An empty board" : picked ? "Everything here is done" : "Nothing in these groups"),
       !board.tasks.length ? h("p", {}, "Add the first task, or ask your agent to interview you and plan the project.")
-        : picked ? h("p", {}, "Finished tasks are hidden. Press H to show them.")
+        : picked ? h("p", {}, "No done task matches the filter. Press Escape to clear it.")
         : h("p", {}, "Pick other groups, or press Escape to show them all."),
       board.tasks.length || store.readOnly ? null : h("button", { class: "primary", onclick: () => newTaskDialog() }, icon("plus"), "New task")));
   }
@@ -3100,7 +3111,7 @@ function home() {
 function fillScreen() {
   const { tasks, stubs } = graphFold();
   if (!tasks.length && !stubs.length) return fit(true);
-  const opts = { vertical: prefs.orient === "vertical", manual: prefs.arrange === "manual", emptyLanes: !prefs.hideDone && !ui.groups.size, stubs };
+  const opts = { vertical: prefs.orient === "vertical", manual: prefs.arrange === "manual", emptyLanes: !ui.groups.size, stubs };
   // Size grows in step with the spacing, so two layouts tell it for every spacing.
   const a = layout(tasks, board, { ...opts, levelGap: LEVEL_GAP.min }), b = layout(tasks, board, { ...opts, levelGap: LEVEL_GAP.max });
   // Spacings are compared in the room above the zoom bar, where the graph can take the whole width. With the
@@ -3529,17 +3540,25 @@ function setupGraphInput() {
 // Board view ---------------------------------------------------------------
 
 function renderKanban() {
-  const columns = VIEW_STATES.filter((s) => !(prefs.hideDone && s === "done") && (!ui.states.size || ui.states.has(s)));
+  const columns = VIEW_STATES.filter((s) => !ui.states.size || ui.states.has(s));
   const tasks = boardOrder(board).filter(matches);
   $("#kanban").replaceChildren(...columns.map((s) => {
     const items = tasks.filter((t) => vstate(t) === s);
+    const compact = s === "done" && !prefs.expandDone && !ui.search.trim() && items.length > 5;
+    const shown = compact ? items.filter((t, i) => i < 5 || same(t.id, ui.selected)) : items;
     const head = h("div", { class: "col-head" }, h("span", { class: "dot" }), LABEL[s], h("span", { class: "count" }, items.length));
     if (s === "proposed" && items.length && !store.readOnly) {
       head.append(h("button", { title: "Approve every proposal in this column", onclick: () => approveAll(items) }, icon("check"), "Approve all"));
     }
     const body = h("div", { class: "col-body", role: items.length ? "listbox" : null, "aria-label": items.length ? LABEL[s] : null },
-      items.length ? items.map(kanbanCard) : h("div", { class: "col-empty" }, s === "blocked" ? "Nothing is blocked" : "Empty"));
-    return acceptDrops(h("div", { class: `col s-${s}`, "data-state": s }, head, body), s);
+      items.length ? shown.map(kanbanCard) : h("div", { class: "col-empty" }, s === "blocked" ? "Nothing is blocked" : "Empty"));
+    let summary = null;
+    if (s === "done" && items.length > 5 && !ui.search.trim()) {
+      summary = h("div", { class: "done-summary" },
+        h("span", {}, compact ? `Showing ${shown.length} of ${items.length} done` : `All ${items.length} done tasks`),
+        h("button", { type: "button", "aria-expanded": String(!compact), onclick: toggleDone }, compact ? `Show all ${items.length}` : "Show fewer"));
+    }
+    return acceptDrops(h("div", { class: `col s-${s}`, "data-state": s }, head, summary, body), s);
   }));
   renderColTabs(columns, tasks);
   markPress();
@@ -3585,10 +3604,6 @@ function renderColTabs(columns, tasks) {
   const tab = (s, n, mark, props) => h("button", { class: `s-${s}${n ? "" : " zero"}`, ...props },
     h("span", { class: "n" }, mark, h("b", {}, n)), h("span", { class: "lbl" }, LABEL[s]));
   const tabs = columns.map((s) => acceptDrops(tab(s, count(s), h("span", { class: "dot" }), { "data-state": s, "aria-label": `${LABEL[s]}: ${count(s)}`, onclick: () => showColumn(s) }), s));
-  if (prefs.hideDone && (!ui.states.size || ui.states.has("done"))) {
-    const n = count("done");
-    tabs.push(tab("done", n, icon("eye-off"), { class: "s-done off", "aria-label": `Done: ${n} hidden. Show finished tasks`, onclick: () => { toggleDone(); showColumn("done"); } }));
-  }
   $("#col-tabs").replaceChildren(...tabs);
   markColumn();
 }
@@ -4791,7 +4806,7 @@ function groupsDialog(kept = {}) {
 const SHORTCUTS = [
   ["Moving around", [["← / ↑ / ↓ / →", "Select the next card in that direction"], ["Enter", "Move into the selected task's panel, where Tab goes round its controls"], ["Esc", "Leave the panel, close it, or clear the filter"], ["/", "Filter tasks"], ["Shift+← / Shift+→", "Previous or next open board"]]],
   ["The selected task", [["A", "Approve the selected proposal"], ["S", "Start the selected task"], ["D", "Mark the selected task done"], ["P", "Pause the selected task"], ["E", "Rename the selected task"], ["Del / Backspace", "Delete the selected task, or reject it if it is a proposal"], ["Ctrl+click", "Select several cards, then approve, finish or delete them together with the bar, A, D or Del"], ["Right-click", "Actions for a card, a dependency or empty space"]]],
-  ["Views", [["G / B", "Graph or board view"], ["L", "Graph left to right or top to bottom"], ["M", "Automatic layout, or order cards and groups yourself by dragging them"], ["H", "Hide or show finished tasks"], ["F", "Fit the graph to the screen"], ["+ / -", "Zoom"], ["[ / ]", "Compress or extend the graph"]]],
+  ["Views", [["G / B", "Graph or board view"], ["L", "Graph left to right or top to bottom"], ["M", "Automatic layout, or order cards and groups yourself by dragging them"], ["H", "Show all done tasks, or compact them"], ["F", "Fit the graph to the screen"], ["+ / -", "Zoom"], ["[ / ]", "Compress or extend the graph"]]],
   ["Editing", [["N", "New task"], ["Ctrl+Enter", "Save the text you are editing"], ["Ctrl+Z", "Undo your last change"], ["Ctrl+Shift+Z / Ctrl+Y", "Redo"]]],
 ];
 
@@ -5091,7 +5106,7 @@ function displayMenu() {
       graph && row("Card order", ["M"], seg("Card order", [["auto", "Automatic"], ["manual", "Manual"]], manual ? "manual" : "auto", toggleArrange),
         manual ? "Cards keep the order you give them. Drag a card up or down or into another lane, or a lane by its name." : "Cards are arranged for fewer crossings and straighter arrows."),
       h("div", { class: "d-head" }, "Tasks"),
-      row("Finished tasks", ["H"], seg("Finished tasks", [[false, "Show"], [true, "Hide"]], !!prefs.hideDone, toggleDone)),
+      row("Done tasks", ["H"], seg("Done tasks", [[false, "Compact"], [true, "All"]], !!prefs.expandDone, toggleDone)),
       h("div", { class: "d-head" }, "Appearance"),
       row("Theme", [], seg("Theme", [["light", "Light", "sun"], ["dark", "Dark", "moon"], [null, "Auto", "contrast"]], prefs.theme || null, setThemePref)),
     ));
@@ -5136,22 +5151,22 @@ function filterMenu() {
     const counts = Object.fromEntries(VIEW_STATES.map((s) => [s, 0]));
     for (const t of board.tasks) counts[vstate(t)]++;
     const row = (s) => {
-      const hidden = s === "done" && prefs.hideDone, on = ui.states.has(s);
-      return h("button", { type: "button", class: hidden ? "off" : null, "aria-pressed": String(on),
-        onclick: pick(() => (hidden ? toggleDone() : on ? ui.states.delete(s) : ui.states.add(s))) },
-        icon(on ? "check" : hidden ? "eye-off" : null), h("span", { class: `dot s-${s}` }), h("span", { class: "lbl" }, LABEL[s]), h("span", { class: "count" }, hidden ? "hidden" : counts[s]));
+      const on = ui.states.has(s);
+      return h("button", { type: "button", "aria-pressed": String(on),
+        onclick: pick(() => (on ? ui.states.delete(s) : ui.states.add(s))) },
+        icon(on ? "check" : null), h("span", { class: `dot s-${s}` }), h("span", { class: "lbl" }, LABEL[s]), h("span", { class: "count" }, counts[s]));
     };
     node.replaceChildren(...compact(
       h("div", { class: "ctx-head" }, "States"),
       VIEW_STATES.map(row),
-      h("button", { type: "button", "aria-pressed": String(!!prefs.hideDone), onclick: pick(toggleDone) }, icon(prefs.hideDone ? "check" : null), h("span", { class: "lbl" }, "Hide finished tasks")),
+      h("button", { type: "button", "aria-pressed": String(!!prefs.expandDone), onclick: pick(toggleDone) }, icon(null), h("span", { class: "lbl" }, "Show all done tasks"), h("span", { class: "count" }, icon(prefs.expandDone ? "eye" : "eye-off"))),
       ui.states.size + ui.groups.size || ui.search
         ? h("button", { type: "button", onclick: () => { ui.states.clear(); ui.groups.clear(); ui.search = search.value = $("#search").value = ""; fitted = false; closeMenu(true); render(); } }, icon("x"), h("span", { class: "lbl" }, "Clear filters"))
         : null,
     ));
     if (focused >= 0) (buttons()[focused] || node.closest(".ctx-menu") || node).focus({ preventScroll: true });
   };
-  search.addEventListener("input", () => { ui.search = $("#search").value = search.value; render(); fill(); });
+  search.addEventListener("input", () => { ui.search = $("#search").value = search.value; fitted = false; render(); fill(); });
   search.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); search.blur(); } });
   fill();
   return [{ node: search }, { node }, ...(board.groups.length ? ["sep", { head: "Groups" }, ...groupFilterMenu()] : [])];
@@ -5775,7 +5790,7 @@ function setupChrome() {
   $("#help").onclick = helpDialog;
   $("#download").onclick = download;
   const search = $("#search");
-  search.addEventListener("input", () => { ui.search = search.value; render(); });
+  search.addEventListener("input", () => { ui.search = search.value; fitted = false; render(); });
   search.addEventListener("keydown", (e) => {
     if (e.key === "Escape") { search.value = ""; ui.search = ""; search.blur(); render(); }
     if (e.key === "Enter") { const first = board.tasks.find(matches); if (first) select(first.id); }
@@ -5910,7 +5925,7 @@ function toggleOrient() {
 
 // Task ids in an order that makes the manual layout show what the automatic one shows now.
 function automaticOrder() {
-  const tasks = board.tasks.filter((t) => !(prefs.hideDone && t.state === "done"));
+  const tasks = board.tasks;
   const L = layout(tasks, board, { vertical: prefs.orient === "vertical", levelGap: prefs.levelGap });
   const across = (t) => (L.vertical ? L.pos.get(key(t.id)).x : L.pos.get(key(t.id)).y);
   const cellOf = (t) => `${laneId(t)}|${L.vertical ? L.pos.get(key(t.id)).y : L.pos.get(key(t.id)).x}`;
@@ -5958,7 +5973,8 @@ function setLevelGap(gap) {
 }
 
 function toggleDone() {
-  prefs.hideDone = !prefs.hideDone;
+  prefs.expandDone = !prefs.expandDone;
+  unfolded.clear();
   savePrefs();
   fitted = false;
   render();
