@@ -107,7 +107,6 @@ header.top > .tools > button, header.top > #help, .board-title { height: 30px; }
 #group-filter > .icon:last-child { color: var(--faint); margin-left: -2px; }
 #group-filter.on { color: var(--text); background: color-mix(in srgb, var(--g) 12%, var(--surface)); border-color: color-mix(in srgb, var(--g) 60%, transparent); }
 #hide-done { flex-shrink: 0; width: 76px; min-width: 76px; height: 30px; justify-content: center; color: var(--muted); }
-#hide-done.on { color: var(--text); background: color-mix(in srgb, var(--done) 12%, var(--surface)); border-color: color-mix(in srgb, var(--done) 60%, transparent); }
 #group-filter.menu-target { background: var(--surface-2); border-color: var(--border-strong); }
 .gf-body { display: flex; flex-direction: column; }
 .gf-body .count { color: var(--faint); font-size: 12px; font-variant-numeric: tabular-nums; }
@@ -813,7 +812,7 @@ dialog.dlg[open]:has(> form > .help) { display: flex; flex-direction: column; }
       <button id="view-graph" data-icon="graph" data-tip="Dependency graph" data-key="G" aria-label="Graph"><span class="lbl">Graph</span></button>
       <button id="view-board" data-icon="columns" data-tip="Board by state" data-key="B" aria-label="Board"><span class="lbl">Board</span></button>
     </div>
-    <button id="display" data-icon="sliders" data-tip="Direction, card order, finished tasks and theme" aria-haspopup="dialog" aria-expanded="false" aria-label="Display options"><span class="lbl">Display</span></button>
+    <button id="display" data-icon="sliders" data-tip="Direction, card order, done tasks and theme" aria-haspopup="dialog" aria-expanded="false" aria-label="Display options"><span class="lbl">Display</span></button>
     <button id="inbox" aria-haspopup="dialog" aria-expanded="false" hidden></button>
   </div>
   <div class="tools edit-only">
@@ -2728,11 +2727,11 @@ function renderHeader() {
 
   renderInboxButton();
   const hd = $("#hide-done");
-  hd.classList.toggle("on", !!prefs.expandDone);
   hd.setAttribute("aria-pressed", String(!!prefs.expandDone));
-  hd.dataset.tip = prefs.expandDone ? "Compact completed work" : `Show all ${counts.done} completed tasks`;
-  hd.setAttribute("aria-label", hd.dataset.tip);
-  hd.replaceChildren(icon("eye"), h("span", {}, "Done"));
+  hd.dataset.tip = prefs.expandDone ? "Compact done tasks" : `Show all ${counts.done} done tasks`;
+  hd.setAttribute("aria-label", "Show all done tasks");
+  // The eye is open while every done task shows, and crossed out while they are compacted.
+  hd.replaceChildren(icon(prefs.expandDone ? "eye" : "eye-off"), h("span", {}, "Done"));
 
   const total = board.tasks.length || 1;
   $("#progress").replaceChildren(...["done", "review", "doing", "todo", "blocked", "proposed"].map((s) =>
@@ -2975,7 +2974,7 @@ function renderGraph() {
     empty.replaceChildren(h("div", {},
       h("h2", {}, !board.tasks.length ? "An empty board" : picked ? "Everything here is done" : "Nothing in these groups"),
       !board.tasks.length ? h("p", {}, "Add the first task, or ask your agent to interview you and plan the project.")
-        : picked ? h("p", {}, "Finished tasks are hidden. Press H to show them.")
+        : picked ? h("p", {}, "No done task matches the filter. Press Escape to clear it.")
         : h("p", {}, "Pick other groups, or press Escape to show them all."),
       board.tasks.length || store.readOnly ? null : h("button", { class: "primary", onclick: () => newTaskDialog() }, icon("plus"), "New task")));
   }
@@ -3556,7 +3555,7 @@ function renderKanban() {
     let summary = null;
     if (s === "done" && items.length > 5 && !ui.search.trim()) {
       summary = h("div", { class: "done-summary" },
-        h("span", {}, compact ? `Showing ${shown.length} of ${items.length} completed` : `All ${items.length} completed tasks`),
+        h("span", {}, compact ? `Showing ${shown.length} of ${items.length} done` : `All ${items.length} done tasks`),
         h("button", { type: "button", "aria-expanded": String(!compact), onclick: toggleDone }, compact ? `Show all ${items.length}` : "Show fewer"));
     }
     return acceptDrops(h("div", { class: `col s-${s}`, "data-state": s }, head, summary, body), s);
@@ -4807,7 +4806,7 @@ function groupsDialog(kept = {}) {
 const SHORTCUTS = [
   ["Moving around", [["← / ↑ / ↓ / →", "Select the next card in that direction"], ["Enter", "Move into the selected task's panel, where Tab goes round its controls"], ["Esc", "Leave the panel, close it, or clear the filter"], ["/", "Filter tasks"], ["Shift+← / Shift+→", "Previous or next open board"]]],
   ["The selected task", [["A", "Approve the selected proposal"], ["S", "Start the selected task"], ["D", "Mark the selected task done"], ["P", "Pause the selected task"], ["E", "Rename the selected task"], ["Del / Backspace", "Delete the selected task, or reject it if it is a proposal"], ["Ctrl+click", "Select several cards, then approve, finish or delete them together with the bar, A, D or Del"], ["Right-click", "Actions for a card, a dependency or empty space"]]],
-  ["Views", [["G / B", "Graph or board view"], ["L", "Graph left to right or top to bottom"], ["M", "Automatic layout, or order cards and groups yourself by dragging them"], ["H", "Expand or compact completed tasks"], ["F", "Fit the graph to the screen"], ["+ / -", "Zoom"], ["[ / ]", "Compress or extend the graph"]]],
+  ["Views", [["G / B", "Graph or board view"], ["L", "Graph left to right or top to bottom"], ["M", "Automatic layout, or order cards and groups yourself by dragging them"], ["H", "Show all done tasks, or compact them"], ["F", "Fit the graph to the screen"], ["+ / -", "Zoom"], ["[ / ]", "Compress or extend the graph"]]],
   ["Editing", [["N", "New task"], ["Ctrl+Enter", "Save the text you are editing"], ["Ctrl+Z", "Undo your last change"], ["Ctrl+Shift+Z / Ctrl+Y", "Redo"]]],
 ];
 
@@ -5107,7 +5106,7 @@ function displayMenu() {
       graph && row("Card order", ["M"], seg("Card order", [["auto", "Automatic"], ["manual", "Manual"]], manual ? "manual" : "auto", toggleArrange),
         manual ? "Cards keep the order you give them. Drag a card up or down or into another lane, or a lane by its name." : "Cards are arranged for fewer crossings and straighter arrows."),
       h("div", { class: "d-head" }, "Tasks"),
-      row("Finished tasks", ["H"], seg("Finished tasks", [[false, "Compact"], [true, "All"]], !!prefs.expandDone, toggleDone)),
+      row("Done tasks", ["H"], seg("Done tasks", [[false, "Compact"], [true, "All"]], !!prefs.expandDone, toggleDone)),
       h("div", { class: "d-head" }, "Appearance"),
       row("Theme", [], seg("Theme", [["light", "Light", "sun"], ["dark", "Dark", "moon"], [null, "Auto", "contrast"]], prefs.theme || null, setThemePref)),
     ));
@@ -5160,7 +5159,7 @@ function filterMenu() {
     node.replaceChildren(...compact(
       h("div", { class: "ctx-head" }, "States"),
       VIEW_STATES.map(row),
-      h("button", { type: "button", "aria-pressed": String(!!prefs.expandDone), onclick: pick(toggleDone) }, icon(prefs.expandDone ? "check" : null), h("span", { class: "lbl" }, "Show all completed tasks")),
+      h("button", { type: "button", "aria-pressed": String(!!prefs.expandDone), onclick: pick(toggleDone) }, icon(null), h("span", { class: "lbl" }, "Show all done tasks"), h("span", { class: "count" }, icon(prefs.expandDone ? "eye" : "eye-off"))),
       ui.states.size + ui.groups.size || ui.search
         ? h("button", { type: "button", onclick: () => { ui.states.clear(); ui.groups.clear(); ui.search = search.value = $("#search").value = ""; fitted = false; closeMenu(true); render(); } }, icon("x"), h("span", { class: "lbl" }, "Clear filters"))
         : null,

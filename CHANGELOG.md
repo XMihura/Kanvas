@@ -1,5 +1,8 @@
 # Changelog
 
+## Unreleased
+- Done tasks stay out of the way without disappearing: the Done column shows five of them with a Show all button, graph lanes keep their "8 done" stubs, and the eye button in the header (or `H`) shows every done task in both views and is crossed out while they are compact. On phones the same switch is in the Filter menu. Search finds done tasks in compact lanes, a task opened from a link stays in sight, and none of this changes the board file. Replaces hiding finished tasks (#57, thanks to @JMAgundezG for raising the noisy Done column)
+
 ## v0.5.0 — 2026-11-09
 - Images in descriptions and notes: paste or drop one into the editor, and it is kept next to the board in `kanvas-files/`, named by a hash of its bytes, with ordinary Markdown pointing to it; click an image to see it at full size. Agents attach screenshots with `attach ID IMAGE ... [-m TEXT]`. `export` puts the images inside the snapshot, and `check` warns about images that are missing or that nothing uses. PNG, JPEG, GIF and WebP up to 10 MB; images from the web stay links
 - Preview images before creating a task, with removable thumbnails and uploads deferred until creation (#56, thanks to @JMAgundezG). New notes and note edits use the same previews and upload only when saved; cancelling before saving leaves no uploads. New-note previews stay with their task when switching tasks, and failed uploads or saves keep the draft for retry (#59)
