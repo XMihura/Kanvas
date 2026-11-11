@@ -454,6 +454,46 @@ class BrowserSmokeTests(unittest.TestCase):
         self.assertEqual(kanvas.yolo_cover(board()).get("FE-03"), "LN-02")
         self.assertEqual(self.page.logged(), [])
 
+    def test_any_task_is_marked_done_from_its_menu_with_d_or_with_others_selected(self):
+        self.load()
+        state = lambda tid: kanvas.find_task(kanvas.load_board(self.path), tid)["state"]
+        close_menu = "document.querySelector('.ctx-menu').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))"
+        # A proposal and a blocked task go to Done in one step, with nothing added to their notes.
+        for tid in ("BE-05", "LN-01"):
+            self.assertIn("Mark done", self.card_menu(tid))
+            self.click_in_menu("Mark done")
+            self.wait_for(f"{tid} done in kanvas.json", lambda: state(tid) == "done")
+            self.assertEqual(self.notes(tid), [])
+        self.assertIn("Start\nMark done", self.card_menu("FE-04"))
+        self.page.js(close_menu)
+        self.assertNotIn("Mark done", self.card_menu("RS-01"))
+        self.page.js(close_menu)
+
+        # The panel's buttons keep to the next step, and D marks the open task done.
+        self.open_task("FE-05")
+        buttons = self.page.js("[...document.querySelectorAll('#panel .now-actions button')].map((b) => b.innerText.trim())")
+        self.assertEqual(buttons, ["Approve", "Ask for changes", "Reject", "YOLO up to here…"])
+        self.page.js("document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'd', bubbles: true, cancelable: true }))")
+        self.wait_for("FE-05 done in kanvas.json", lambda: state("FE-05") == "done")
+        self.page.js("document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))")
+        self.until("the panel closed", "document.querySelector('#panel').hidden")
+
+        # Tasks selected together in every state are marked done in one step; the one that was done stays selected.
+        self.page.js("document.querySelector('#view-board').click()")
+        picked = ["LN-03", "FE-04", "BE-04", "BE-03", "BE-02", "RS-01"]
+        self.assertEqual([state(tid) for tid in picked], ["proposed", "todo", "todo", "doing", "review", "done"])
+        for tid in picked:
+            self.page.js(f"document.querySelector('.kcard[data-id={json.dumps(tid)}]').dispatchEvent(new MouseEvent('click', {{ bubbles: true, ctrlKey: true }}))")
+        bar = "[...document.querySelectorAll('.multi-bar button')].map((b) => b.innerText.trim()).filter(Boolean)"
+        self.until("the bar of the selection", "document.querySelector('.multi-bar .count')?.innerText.trim() === '6 selected'")
+        self.assertEqual(self.page.js(bar), ["Approve 1", "Mark 5 done", "Delete 6"])
+        self.page.js("[...document.querySelectorAll('.multi-bar button')].find((b) => b.innerText.includes('Mark 5 done')).click()")
+        self.wait_for("the selected tasks done in kanvas.json", lambda: all(state(tid) == "done" for tid in picked))
+        self.until("the done task left selected", "document.querySelector('.multi-bar .count')?.innerText.trim() === '1 selected'")
+        self.assertEqual(self.page.js(bar), ["Delete 1"])
+        self.assertIn("Marked 5 tasks done", self.page.js(TOASTS))
+        self.assertEqual(self.page.logged(), [])
+
     def open_other_board(self):
         folder = os.path.join(self.dir, "other")
         os.mkdir(folder)
