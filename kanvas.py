@@ -2947,8 +2947,9 @@ def cmd_serve(args):
             print("That Kanvas is not open to your phone. Stop it (Ctrl+C in its terminal) and run `kanvas serve --tailscale` there.")
         if network_urls:
             print_network(network_urls)
-        if set(listen) - {urlparse(u).hostname for u in network_urls}:
-            print("That Kanvas keeps the addresses it started with. Stop it (Ctrl+C in its terminal) and run this command again to use --listen.")
+        if listen:
+            print("That Kanvas keeps the addresses, names and ranges it started with, whatever --listen, --allow and --listen-name say here. "
+                  "To change them, stop it (Ctrl+C in its terminal) and run this command again.")
         if version != VERSION:
             print(f"That Kanvas is {version} and this command is {VERSION}; to switch, stop it (Ctrl+C in its terminal) and run `kanvas serve` again.")
         if not args.no_open:

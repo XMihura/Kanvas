@@ -3204,15 +3204,23 @@ class ServerTests(TempBoard):
         self.server.network = [f"http://192.168.1.50:{self.port}/"]
         self.addCleanup(setattr, self.server, "network", [])
         other = self.other_project()
-        code, out, err = self.run_cli("serve", "--no-open", "--port", str(self.port), "--listen", "192.168.1.50", cwd=os.path.dirname(other))
+        code, out, err = self.run_cli("serve", "--no-open", "--port", str(self.port), cwd=os.path.dirname(other))
         self.assertEqual(code, 0, err)
         # The command's own output ends its lines as the system does.
         self.assertIn(f"On your network: http://192.168.1.50:{self.port}/other/", out.splitlines())
         self.assertIn("It has no password", out)
-        self.assertNotIn("keeps the addresses it started with", out)
-        code, out, err = self.run_cli("serve", "--no-open", "--port", str(self.port), "--listen", "10.8.0.2", cwd=os.path.dirname(other))
-        self.assertEqual(code, 0, err)
-        self.assertIn("That Kanvas keeps the addresses it started with. Stop it (Ctrl+C in its terminal) and run this command again to use --listen.", out)
+        self.assertNotIn("That Kanvas keeps", out)
+        # The running Kanvas keeps its own addresses, names and ranges, and the command says so.
+        kept = ("That Kanvas keeps the addresses, names and ranges it started with, whatever --listen, --allow and --listen-name say here. "
+                "To change them, stop it (Ctrl+C in its terminal) and run this command again.")
+        for args in (["--listen", "10.8.0.2"], ["--listen", "192.168.1.50"], ["--listen", "192.168.1.50", "--allow", "192.168.1.0/24"],
+                     ["--listen", "192.168.1.50", "--listen-name", "kanvas.lan"]):
+            with self.subTest(args=args):
+                code, out, err = self.run_cli("serve", "--no-open", "--port", str(self.port), *args, cwd=os.path.dirname(other))
+                self.assertEqual(code, 0, err)
+                self.assertIn(kept, out.splitlines())
+                self.assertIn(f"On your network: http://192.168.1.50:{self.port}/other/", out.splitlines())
+                self.assertEqual(self.server.network_listeners, [])
 
     def browser_after_agent(self, op, *agent_args):
         """The page loads the board, an agent runs a command, then the page saves `op`.
