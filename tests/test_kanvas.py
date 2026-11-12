@@ -3206,7 +3206,8 @@ class ServerTests(TempBoard):
         other = self.other_project()
         code, out, err = self.run_cli("serve", "--no-open", "--port", str(self.port), "--listen", "192.168.1.50", cwd=os.path.dirname(other))
         self.assertEqual(code, 0, err)
-        self.assertIn(f"On your network: http://192.168.1.50:{self.port}/other/\n", out)
+        # The command's own output ends its lines as the system does.
+        self.assertIn(f"On your network: http://192.168.1.50:{self.port}/other/", out.splitlines())
         self.assertIn("It has no password", out)
         self.assertNotIn("keeps the addresses it started with", out)
         code, out, err = self.run_cli("serve", "--no-open", "--port", str(self.port), "--listen", "10.8.0.2", cwd=os.path.dirname(other))
