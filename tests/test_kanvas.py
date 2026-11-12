@@ -4,6 +4,7 @@ import argparse
 import atexit
 import base64
 import contextlib
+import errno
 import http.client
 import io
 import json
@@ -2930,6 +2931,7 @@ class ServerTests(TempBoard):
         self.open_to_phone()
         self.assertEqual(json.loads(self.request("GET", "/api/boards", headers={"Host": "box.tail1.ts.net"})[2])["boards"], names_only)
         handler = kanvas.BoardHandler.__new__(kanvas.BoardHandler)
+        handler.server = self.server
         for address, host, local in (("127.0.0.1", "127.0.0.1:8765", True), ("::1", "[::1]:8765", True), ("127.0.0.1", "localhost", True),
                                      ("100.64.0.9", "127.0.0.1:8765", False), ("127.0.0.1", "box.tail1.ts.net", False),
                                      ("192.168.1.5", "localhost:8765", False), ("127.0.0.1", "", False)):
@@ -3072,7 +3074,153 @@ class ServerTests(TempBoard):
         status, _, body = self.open_board(self.other_project())
         self.assertEqual(json.loads(body)["phone"], ["http://box.tail1.ts.net:8765/other/", "http://100.64.0.7:8765/other/"])
         url = f"http://127.0.0.1:{self.port}/"
-        self.assertEqual(kanvas.join_running(url, self.path), (url + f"{self.name}/", [f"http://box.tail1.ts.net:8765/{self.name}/", f"http://100.64.0.7:8765/{self.name}/"]))
+        self.assertEqual(kanvas.join_running(url, self.path), (url + f"{self.name}/", [f"http://box.tail1.ts.net:8765/{self.name}/", f"http://100.64.0.7:8765/{self.name}/"], []))
+
+    def network_server(self, hosts=("192.168.1.50", "kanvas.lan"), allow=()):
+        """A listener like the ones `serve --listen` adds, here on another local port."""
+        listener = kanvas.BoardServer(("127.0.0.1", 0), hosts=frozenset(hosts), quiet=True, share=self.server,
+                                      allow=[kanvas.allowed_network(a) for a in allow])
+        threading.Thread(target=listener.serve_forever, daemon=True).start()
+        self.addCleanup(listener.server_close)
+        self.addCleanup(listener.shutdown)
+        return listener.server_address[1]
+
+    def test_a_listen_address_answers_to_its_own_names_only(self):
+        port = self.network_server()
+        for host in ("192.168.1.50", f"192.168.1.50:{port}", "kanvas.lan", "KANVAS.lan."):
+            with self.subTest(host=host):
+                self.assertEqual(self.phone_request(port, "GET", self.api, host), (200, self.raw()))
+        for host in ("evil.example", "127.0.0.1", "localhost", "192.168.1.5", "kanvas.lan.evil.example"):
+            with self.subTest(host=host):
+                status, reply = self.phone_request(port, "GET", self.api, host)
+                self.assertEqual((status, json.loads(reply)["error"]), (403, "Host not allowed"))
+        board = json.loads(self.raw())
+        board["tasks"][3]["state"] = "todo"
+        status, _ = self.phone_request(port, "PUT", self.api, "192.168.1.50", json.dumps(board).encode("utf-8"),
+                                       {"Content-Type": "application/json", "If-Match": kanvas.etag_of(self.raw())})
+        self.assertEqual(status, 200)
+        self.assertEqual(self.get("DV-04")["state"], "todo")
+        # The address Kanvas keeps for this computer does not take those names.
+        self.assertEqual(self.request("GET", self.api, headers={"Host": "192.168.1.50"})[0], 403)
+        self.assertEqual(self.request("GET", self.api, headers={"Host": "kanvas.lan"})[0], 403)
+
+    def test_a_listen_address_answers_only_the_devices_it_allows(self):
+        json_type = {"Content-Type": "application/json"}
+        before = self.raw()
+        port = self.network_server(allow=["192.168.1.0/24", "10.8.0.0/24"])
+        for method, path, body in (("GET", self.api, None), ("GET", "/", None), ("GET", "/api/boards", None), ("PUT", self.api, b"{}"),
+                                   ("POST", "/api/boards", b"{}"), ("POST", f"/{self.name}/api/files", b"x"),
+                                   ("DELETE", f"/{self.name}/api/phone", b"{}")):
+            with self.subTest(method=method, path=path):
+                status, reply = self.phone_request(port, method, path, "kanvas.lan", body, json_type)
+                self.assertEqual((status, json.loads(reply)["error"]), (403, "Kanvas is not open to this device's address"))
+        self.assertEqual(self.raw(), before)
+        # A device that is allowed still has to ask by one of the address's names.
+        port = self.network_server(allow=["192.168.1.0/24", "127.0.0.1"])
+        self.assertEqual(self.phone_request(port, "GET", self.api, "kanvas.lan"), (200, before))
+        self.assertEqual(self.phone_request(port, "GET", self.api, "evil.example")[0], 403)
+        # This computer's own address has no such list.
+        self.assertEqual(self.request("GET", self.api)[0], 200)
+        handler = kanvas.BoardHandler.__new__(kanvas.BoardHandler)
+        handler.server = mock.Mock(allow=[kanvas.allowed_network(a) for a in ("192.168.1.0/24", "10.8.0.7")])
+        for address, allowed in (("192.168.1.77", True), ("10.8.0.7", True), ("10.8.0.8", False), ("192.168.2.1", False),
+                                 ("127.0.0.1", False), ("::1", False), ("", False)):
+            with self.subTest(address=address):
+                handler.client_address = (address, 50000)
+                self.assertEqual(handler._client_allowed(), allowed)
+
+    def test_what_arrives_at_a_listen_address_never_counts_as_this_computer(self):
+        """A port forward on this computer reaches the address as this computer would, and its devices choose their Host."""
+        other = self.other_project()
+        self.open_board(other)
+        names_only = [{"name": self.name, "title": "Test"}, {"name": "other", "title": "Other"}]
+        json_type = {"Content-Type": "application/json"}
+        port = self.network_server(hosts=("192.168.1.50", "localhost", "127.0.0.1"))
+        for host in ("localhost", f"127.0.0.1:{port}", "192.168.1.50"):
+            with self.subTest(host=host):
+                status, reply = self.phone_request(port, "GET", "/api/boards", host)
+                self.assertEqual((status, json.loads(reply)["manage"], json.loads(reply)["boards"]), (200, False, names_only))
+                self.assertNotIn(self.path.encode("utf-8"), self.phone_request(port, "GET", "/", host)[1])
+                third = json.dumps({"path": self.other_project("third-" + host.split(":")[0])}).encode("utf-8")
+                status, reply = self.phone_request(port, "POST", "/api/boards", host, third, json_type)
+                self.assertEqual((status, json.loads(reply)["error"]), (403, "Boards open only from the computer running Kanvas"))
+                status, reply = self.phone_request(port, "DELETE", "/api/boards/other", host, b"{}", json_type)
+                self.assertEqual((status, json.loads(reply)["error"]), (403, "Boards close only from the computer running Kanvas"))
+                status, reply = self.phone_request(port, "POST", f"/{self.name}/api/phone", host, b"{}", json_type)
+                self.assertEqual((status, json.loads(reply)["error"]), (403, "Only the computer running Kanvas can open it to phones"))
+                status, reply = self.phone_request(port, "GET", f"/{self.name}/api/phone", host)
+                self.assertEqual((status, json.loads(reply)["manage"]), (200, False))
+                self.assertEqual(self.phone_request(port, "GET", self.api, host), (200, self.raw()))
+        self.assertEqual([b["name"] for b in self.server.board_list()], [self.name, "other"])
+        board = json.loads(self.raw())
+        board["tasks"][3]["state"] = "todo"
+        body, headers = json.dumps(board).encode("utf-8"), dict(json_type, **{"If-Match": kanvas.etag_of(self.raw())})
+        open(self.path + ".lock", "w").close()
+        self.addCleanup(os.remove, self.path + ".lock")
+        with mock.patch.object(kanvas, "LOCK_TIMEOUT", 0.2):
+            status, reply = self.phone_request(port, "PUT", self.api, "localhost", body, headers)
+        self.assertEqual((status, json.loads(reply)["error"]), (503, "The computer running Kanvas could not save the board"))
+
+    def test_listen_addresses_open_on_the_same_port_with_their_names_and_ranges(self):
+        allow = [kanvas.allowed_network("192.168.1.0/24")]
+        listeners = [mock.Mock(), mock.Mock()]
+        with mock.patch.object(kanvas, "BoardServer", side_effect=listeners) as made:
+            urls = self.server.open_to_network(["192.168.1.50", "10.8.0.2"], ["kanvas.lan"], allow)
+        self.addCleanup(setattr, self.server, "network_listeners", [])
+        self.assertEqual(urls, [f"http://kanvas.lan:{self.port}/", f"http://192.168.1.50:{self.port}/", f"http://10.8.0.2:{self.port}/"])
+        self.assertEqual([c[0] for c in made.call_args_list], [(("192.168.1.50", self.port),), (("10.8.0.2", self.port),)])
+        self.assertEqual(made.call_args_list[0][1], {"hosts": {"192.168.1.50", "kanvas.lan"}, "quiet": True, "share": self.server, "allow": allow})
+        self.assertEqual(made.call_args_list[1][1]["hosts"], {"10.8.0.2", "kanvas.lan"})
+        for listener in listeners:
+            listener.serve_forever.assert_called_once_with()
+        # This computer's own address keeps to its local names, so a port forward to it stays shut out.
+        self.assertEqual(self.request("GET", self.api, headers={"Host": "192.168.1.50"})[0], 403)
+        # A board opened later is told its addresses there.
+        _, _, body = self.open_board(self.other_project())
+        there = [f"http://kanvas.lan:{self.port}/other/", f"http://192.168.1.50:{self.port}/other/", f"http://10.8.0.2:{self.port}/other/"]
+        self.assertEqual(json.loads(body)["network"], there)
+        url = f"http://127.0.0.1:{self.port}/"
+        self.assertEqual(kanvas.join_running(url, self.path)[2], [u.replace("/other/", f"/{self.name}/") for u in there])
+        with mock.patch.object(socketserver.TCPServer, "server_close"):
+            self.server.server_close()
+        for listener in listeners:
+            listener.shutdown.assert_called_once_with()
+            listener.server_close.assert_called_once_with()
+
+    def test_a_listen_address_this_computer_does_not_have_is_named(self):
+        with mock.patch.object(kanvas, "BoardServer", side_effect=OSError(errno.EADDRNOTAVAIL, "Cannot assign requested address")):
+            with self.assertRaises(kanvas.KanvasError) as raised:
+                self.server.open_to_network(["192.168.1.50"])
+        self.assertIn(f"Could not listen on 192.168.1.50:{self.port}: ", str(raised.exception))
+        self.assertIn("Cannot assign requested address. --listen takes an address this computer has right now.", str(raised.exception))
+        self.assertEqual((self.server.network, self.server.network_listeners), ([], []))
+        # Another program on that address and port is a different trouble.
+        with mock.patch.object(kanvas, "BoardServer", side_effect=OSError(errno.EADDRINUSE, "Address already in use")):
+            with self.assertRaises(kanvas.KanvasError) as raised:
+                self.server.open_to_network(["192.168.1.50"])
+        self.assertTrue(str(raised.exception).endswith("Address already in use"), raised.exception)
+
+    def test_serve_in_another_project_prints_its_address_on_the_network(self):
+        self.server.network = [f"http://192.168.1.50:{self.port}/"]
+        self.addCleanup(setattr, self.server, "network", [])
+        other = self.other_project()
+        code, out, err = self.run_cli("serve", "--no-open", "--port", str(self.port), cwd=os.path.dirname(other))
+        self.assertEqual(code, 0, err)
+        # The command's own output ends its lines as the system does.
+        self.assertIn(f"On your network: http://192.168.1.50:{self.port}/other/", out.splitlines())
+        self.assertIn("It has no password", out)
+        self.assertNotIn("That Kanvas keeps", out)
+        # The running Kanvas keeps its own addresses, names and ranges, and the command says so.
+        kept = ("That Kanvas keeps the addresses, names and ranges it started with, whatever --listen, --allow and --listen-name say here. "
+                "To change them, stop it (Ctrl+C in its terminal) and run this command again.")
+        for args in (["--listen", "10.8.0.2"], ["--listen", "192.168.1.50"], ["--listen", "192.168.1.50", "--allow", "192.168.1.0/24"],
+                     ["--listen", "192.168.1.50", "--listen-name", "kanvas.lan"]):
+            with self.subTest(args=args):
+                code, out, err = self.run_cli("serve", "--no-open", "--port", str(self.port), *args, cwd=os.path.dirname(other))
+                self.assertEqual(code, 0, err)
+                self.assertIn(kept, out.splitlines())
+                self.assertIn(f"On your network: http://192.168.1.50:{self.port}/other/", out.splitlines())
+                self.assertEqual(self.server.network_listeners, [])
 
     def browser_after_agent(self, op, *agent_args):
         """The page loads the board, an agent runs a command, then the page saves `op`.
@@ -3625,6 +3773,73 @@ class ServeWithoutBoardTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("--tailscale or --host, not both", err)
         self.start.assert_not_called()
+
+    def test_listen_serves_on_that_address_and_says_who_can_reach_the_boards(self):
+        top = self.project()
+        write_board(os.path.join(top, "kanvas.json"), {"title": "", "groups": [], "tasks": []})
+        name = os.path.basename(top)
+        code, out, err = self.serve("n", "--listen", "192.168.1.50", "--allow", "192.168.1.7/24", "--allow", "10.8.0.7",
+                                    "--listen-name", "Kanvas.Home.lan.", start=self.real_server)
+        self.assertEqual(code, 0, err)
+        self.assertIn(f"Open http://127.0.0.1:8765/{name}/  (Ctrl+C to stop)", out)
+        self.assertIn(f"On your network: http://kanvas.home.lan:8765/{name}/  or  http://192.168.1.50:8765/{name}/\n", out)
+        self.assertIn("Scan it with your phone's camera:", out)
+        self.assertIn("\u2580", out)
+        self.assertIn("Kanvas answers there only to devices at 192.168.1.0/24, 10.8.0.7.", out)
+        self.assertIn("It has no password: every device that reaches it there can open and edit your boards", out)
+        self.assertNotIn("Tailscale", out)
+        self.assertEqual(self.made.call_args[0][0], ("192.168.1.50", 8765))
+        self.assertEqual(self.made.call_args[1]["hosts"], {"192.168.1.50", "kanvas.home.lan"})
+        self.assertEqual(self.made.call_args[1]["allow"], [kanvas.allowed_network("192.168.1.0/24"), kanvas.allowed_network("10.8.0.7/32")])
+        self.made.return_value.server_close.assert_called_once_with()
+        self.made_patch.stop()
+
+    def test_listen_without_ranges_does_not_name_any(self):
+        top = self.project()
+        write_board(os.path.join(top, "kanvas.json"), {"title": "", "groups": [], "tasks": []})
+        code, out, err = self.serve("n", "--listen", "192.168.1.50", "--listen", "10.8.0.2", "--listen", "192.168.1.50", start=self.real_server)
+        self.assertEqual(code, 0, err)
+        self.assertIn(f"On your network: http://192.168.1.50:8765/{os.path.basename(top)}/  or  http://10.8.0.2:8765/{os.path.basename(top)}/\n", out)
+        self.assertNotIn("only to devices at", out)
+        self.assertEqual([c[0][0] for c in self.made.call_args_list], [("192.168.1.50", 8765), ("10.8.0.2", 8765)])
+        self.assertEqual(self.made.call_args[1]["allow"], [])
+        self.made_patch.stop()
+
+    def test_listen_takes_addresses_of_this_computer_on_a_network(self):
+        top = self.project()
+        write_board(os.path.join(top, "kanvas.json"), {"title": "", "groups": [], "tasks": []})
+        for args, message in (
+                (["--listen", "0.0.0.0"], "0.0.0.0 would open your boards on every network it is on"),
+                (["--listen", "127.0.0.1"], "127.0.0.1 reaches this computer only"),
+                (["--listen", "my-computer"], "--listen takes one IPv4 address of this computer, such as 192.168.1.50; got 'my-computer'"),
+                (["--listen", "192.168.1.50:8765"], "--listen takes one IPv4 address"),
+                (["--listen", "192.168.1.0/24"], "--listen takes one IPv4 address"),
+                (["--listen", "::"], "--listen takes one IPv4 address"),
+                (["--listen", "192.168.1.50", "--allow", "home"], "--allow takes a range of IPv4 addresses such as 192.168.1.0/24, or one address; got 'home'"),
+                (["--listen", "192.168.1.50", "--listen-name", "http://kanvas.lan"], "--listen-name takes a name or an IPv4 address without a port"),
+                (["--listen", "192.168.1.50", "--listen-name", "kanvas.lan:8765"], "--listen-name takes a name or an IPv4 address without a port"),
+                (["--allow", "192.168.1.0/24"], "--allow and --listen-name go with --listen"),
+                (["--listen-name", "kanvas.lan"], "--allow and --listen-name go with --listen"),
+                (["--listen", "192.168.1.50", "--host", "0.0.0.0"], "--listen or --host, not both")):
+            with self.subTest(args=args):
+                code, _, err = self.serve("n", *args)
+                self.assertEqual(code, 1)
+                self.assertIn(message, err)
+                self.start.assert_not_called()
+
+    def test_a_listen_address_that_cannot_open_stops_serve(self):
+        top = self.project()
+        write_board(os.path.join(top, "kanvas.json"), {"title": "", "groups": [], "tasks": []})
+
+        def start(*args, **kwargs):
+            server = self.real_server(*args, **kwargs)
+            self.made.side_effect = OSError(errno.EADDRNOTAVAIL, "Cannot assign requested address")
+            return server
+        code, out, err = self.serve("n", "--listen", "192.168.1.50", start=start)
+        self.assertEqual(code, 1)
+        self.assertIn("Could not listen on 192.168.1.50:8765", err)
+        self.assertNotIn("On your network", out)
+        self.made_patch.stop()
 
 
 class TailscaleTests(unittest.TestCase):

@@ -207,6 +207,26 @@ This needs Kanvas installed with `uv tool install kanvas-board`, as in [Quick st
 
 The browser's **Open to my phone** and **Stop opening to phones** are remembered the same way, so you can also change phone access from the board.
 
+### Over your own VPN or home network
+
+When your phone already reaches the computer another way, such as a WireGuard VPN into your home network, `--listen` serves the boards on the address the computer has there:
+
+```bash
+kanvas serve --listen 192.168.1.50 --allow 192.168.1.0/24 --allow 10.8.0.0/24
+```
+
+Kanvas keeps listening on this computer and adds that one address, on the same port, until it stops. It prints the board's address there, with a QR code to scan.
+
+- `--listen ADDRESS` takes one IPv4 address of the computer and can be repeated. `0.0.0.0`, every network at once, is refused.
+- `--allow RANGE` answers only devices whose address is in that range, here the home network and the VPN's, and can be repeated. Without it, every device that reaches the address is answered.
+- `--listen-name NAME` adds a name the address is reached by, such as `kanvas.home.lan` or the outside address of a port forward. Kanvas answers there only to the address itself and to these names, which keeps a web page from reaching the boards under a name of its own.
+
+This is a wider door than Tailscale, and it has no password. Every device Kanvas answers there can open and edit your boards, approve tasks and turn on YOLO, and so direct the agents that work from them: use it on a network where you trust every device. A laptop that gets the same address on another network, such as a café's, serves the boards there too.
+
+Whatever arrives at a `--listen` address is a guest: it cannot open or close boards, see where they live on the computer, or change phone access. Point a port forward at the `--listen` address for that reason: Kanvas cannot tell a forward that ends at `127.0.0.1` from the computer itself.
+
+If the phone cannot connect, allow Kanvas's port from those ranges in the computer's firewall, as in the table above with your ranges in place of Tailscale's. `kanvas service` and the board's **Open on your phone…** cover Tailscale only.
+
 ## CLI
 
 You type `kanvas <command>`; `kanvas -h` lists the commands and `kanvas <command> -h` explains one. Agents run the same commands through the project's copy, `python .agents/skills/kanvas/kanvas.py <command>`, so cloud agents and teammates who never installed Kanvas can work on the board too. Messages name the command you typed: `kanvas ...` for the installed command, `python .agents/skills/kanvas/kanvas.py ...` for the project's copy.
@@ -232,6 +252,7 @@ You type `kanvas <command>`; `kanvas -h` lists the commands and `kanvas <command
 | `undepend ID ON [ON ...]` | Remove dependencies from a proposal |
 | `check` | Validate the board; exit code 1 on errors |
 | `serve [--port N] [--host H] [--tailscale]` | Open the board in the browser; when Kanvas already runs for another project, open the board there and return. In a project without a board, offer to create one first. `--tailscale` also opens the boards to your phone over Tailscale |
+| `serve --listen ADDRESS [--allow RANGE] [--listen-name NAME]` | Also serve the boards on one of the computer's addresses, for a [VPN or home network](#over-your-own-vpn-or-home-network) |
 | `close [--port N]` | Close the current project’s board (or `-b PATH`) without deleting its file; closing the last board stops Kanvas |
 | `serve --saved` | Serve only the boards open last time, without a project of its own; what `service` runs |
 | `service install [--tailscale]` / `uninstall` / `status` | Start Kanvas when you log in, so your boards are always open; `--tailscale` also opens them to your phone |

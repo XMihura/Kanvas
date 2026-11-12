@@ -574,7 +574,7 @@ class BrowserSmokeTests(unittest.TestCase):
         self.load("#BE-03")
         port = urllib.parse.urlsplit(self.url).port
         self.cli("close", "--port", str(port))
-        url, _ = kanvas.join_running(f"http://127.0.0.1:{port}/", replacement)
+        url, *_ = kanvas.join_running(f"http://127.0.0.1:{port}/", replacement)
         self.assertTrue(url.endswith("/demo-2/"), url)
         self.until("the old tab to stay closed", "document.querySelector('#sync .label').textContent === 'Board closed'")
         self.type_note("This belongs to the original board")
