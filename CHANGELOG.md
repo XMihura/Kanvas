@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- Open your boards over your own VPN or home network: `kanvas serve --listen ADDRESS` also serves them on one address of the computer, such as its address on a WireGuard or home network, and prints the address with a QR code. `--allow RANGE` answers only devices in those address ranges and `--listen-name NAME` adds a name the address is reached by. There it answers only to that address and those names, and what arrives is a guest that cannot open or close boards, see where they live or change phone access, also through a port forward (#55, thanks to @Dixter999)
 - Done tasks stay out of the way without disappearing: the Done column shows five of them with a Show all button, graph lanes keep their "8 done" stubs, and the eye button in the header (or `H`) shows every done task in both views and is crossed out while they are compact. On phones the same switch is in the Filter menu. Search finds done tasks in compact lanes, a task opened from a link stays in sight, and none of this changes the board file. Replaces hiding finished tasks (#57, thanks to @JMAgundezG for raising the noisy Done column)
 - Mark done from every state: a card's menu and the `D` key mark a proposal, a to-do or a blocked task done in one step, as dragging its card to the Done column does. With several tasks selected, Mark done applies to every one of them that is not done yet, where it took only the tasks in review before. Select, Send to review and Mark done have icons of their own, where all three showed a check mark
 

@@ -2133,19 +2133,23 @@ class BoardServer(ThreadingHTTPServer):
     # On Windows SO_REUSEADDR lets two servers share a port.
     allow_reuse_address = os.name != "nt"
 
-    def __init__(self, address, path=None, hosts=LOCAL_NAMES, quiet=False, share=None, remember=None):
+    def __init__(self, address, path=None, hosts=LOCAL_NAMES, quiet=False, share=None, remember=None, allow=()):
         """`hosts` are the names allowed in the Host header, or None for any. A server made with
         `share` serves the boards of that one and cannot open boards itself. With `remember`, a
-        file path, the open boards and whether phones may connect are kept there for the next start."""
+        file path, the open boards and whether phones may connect are kept there for the next start.
+        `allow` are the networks whose devices get an answer; empty for every device."""
         # TCPServer.__init__ calls server_close when the port is busy, before the rest is set up.
         self.phone_listener = None
+        self.network_listeners = []
         super().__init__(address, BoardHandler)
         self.hosts = hosts
+        self.allow = tuple(allow)
         self.quiet = quiet
         self.remember = remember
         self.main = share or self
         self.opens_boards = share is None
         self.phone = []  # base URLs of the Tailscale listener, by name and by address
+        self.network = []  # base URLs of the `--listen` addresses, by name and by address
         self.phone_lock = threading.Lock()
         self.boards = share.boards if share else {}  # name -> path, in the order the boards were opened
         # A closed URL must never point at another file: old tabs can still read and replay writes to it.
@@ -2214,8 +2218,30 @@ class BoardServer(ThreadingHTTPServer):
             self.phone_listener.server_close()
             self.phone_listener = None
 
+    def open_to_network(self, addresses, names=(), allow=()):
+        """Serve the boards on each of `addresses`, addresses this computer has on a network, on the
+        same port; return the base URLs devices there can open. These listeners answer to their own
+        address and to `names` only, and only to devices in the `allow` networks when there are any."""
+        port = self.server_address[1]
+        for ip in addresses:
+            try:
+                listener = BoardServer((ip, port), hosts=frozenset({ip, *names}), quiet=self.quiet, share=self, allow=allow)
+            except OSError as e:
+                absent = e.errno in (errno.EADDRNOTAVAIL, getattr(errno, "WSAEADDRNOTAVAIL", -1))
+                raise KanvasError(f"Could not listen on {ip}:{port}: {e}" + (". --listen takes an address this computer has right now." if absent else ""))
+            threading.Thread(target=listener.serve_forever, daemon=True).start()
+            self.network_listeners.append(listener)
+            self.network.append(f"http://{ip}:{port}/")
+        # A name is how devices reach the address, so it leads.
+        self.network = [f"http://{name}:{port}/" for name in names] + self.network
+        return self.network
+
     def server_close(self):
         self._stop_phone()
+        for listener in self.network_listeners:
+            listener.shutdown()
+            listener.server_close()
+        self.network_listeners = []
         super().server_close()
 
     def server_bind(self):
@@ -2398,10 +2424,34 @@ class BoardHandler(BaseHTTPRequestHandler):
         # Rejecting foreign Host headers blocks DNS-rebinding attacks from web pages.
         return not self.server.check_host or self._host_name() in self.server.hosts
 
+    def _client_allowed(self):
+        """Whether the device asking is in the networks this listener is limited to, when it has any."""
+        if not self.server.allow:
+            return True
+        try:
+            client = ipaddress.ip_address(self.client_address[0])
+        except ValueError:
+            return False
+        return any(client in network for network in self.server.allow)
+
+    def _refused(self):
+        """Answers a request this listener does not take; says whether it did."""
+        if not self._host_allowed():
+            self._error(403, "Host not allowed")
+        elif not self._client_allowed():
+            self._error(403, "Kanvas is not open to this device's address")
+        else:
+            return False
+        return True
+
     def _from_this_computer(self):
         """Whether the request comes from this computer by one of its local names, with no proxy between.
         Phones, other devices and `tailscale serve`, which passes requests on by this computer's Tailscale
-        name and adds X-Forwarded headers, do not."""
+        name and adds X-Forwarded headers, do not. Neither does anything that arrives at an address opened
+        to other devices, whatever it says of itself: a port forward that ends there makes every device
+        look like this computer."""
+        if not self.server.opens_boards:
+            return False
         try:
             loopback = ipaddress.ip_address(self.client_address[0]).is_loopback
         except ValueError:
@@ -2445,8 +2495,8 @@ class BoardHandler(BaseHTTPRequestHandler):
             return self._error(400, "Expected UTF-8")
 
     def do_GET(self):
-        if not self._host_allowed():
-            return self._error(403, "Host not allowed")
+        if self._refused():
+            return
         parts = self._route()
         if parts in ([""], ["index.html"]):
             boards = self._board_list()
@@ -2537,8 +2587,8 @@ class BoardHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         """Opens another project's board here, for `kanvas serve` in that project, or opens the boards to phones."""
-        if not self._host_allowed():
-            return self._error(403, "Host not allowed")
+        if self._refused():
+            return
         parts = self._route()
         if parts[1:] == ["api", "files"] and self.server.board_path(parts[0]) is not None:
             return self._upload_image(self.server.board_path(parts[0]))
@@ -2581,12 +2631,14 @@ class BoardHandler(BaseHTTPRequestHandler):
         info = {"name": name, "url": f"/{quote(name)}/"}
         if self.server.phone:
             info["phone"] = [f"{base}{quote(name)}/" for base in self.server.phone]
+        if self.server.network:
+            info["network"] = [f"{base}{quote(name)}/" for base in self.server.network]
         self._send(200, json.dumps(info, ensure_ascii=False).encode("utf-8"))
 
     def do_DELETE(self):
         """Close a board, or close Kanvas to phones again, from this computer only."""
-        if not self._host_allowed():
-            return self._error(403, "Host not allowed")
+        if self._refused():
+            return
         parts = self._route()
         if len(parts) == 3 and parts[:2] == ["api", "boards"]:
             if not self._may_manage():
@@ -2611,8 +2663,8 @@ class BoardHandler(BaseHTTPRequestHandler):
         self._phone(parts[0])
 
     def do_PUT(self):
-        if not self._host_allowed():
-            return self._error(403, "Host not allowed")
+        if self._refused():
+            return
         parts = self._route()
         path = self.server.board_path(parts[0]) if parts[1:] == ["api", "board"] else None
         if path is None:
@@ -2703,13 +2755,14 @@ def find_running(port, host="127.0.0.1"):
 
 def join_running(url, path):
     """Open the board at `path` in the Kanvas running at `url`; return the board's URL there,
-    and its URLs for phones on Tailscale (empty without Tailscale)."""
+    its URLs for phones on Tailscale (empty without Tailscale) and its URLs at that Kanvas's
+    `--listen` addresses (empty without any)."""
     body = json.dumps({"path": os.path.abspath(path)}).encode("utf-8")
     req = urllib.request.Request(url + "api/boards", body, {"Content-Type": "application/json"}, method="POST")
     try:
         with LOCAL.open(req, timeout=5) as r:
             info = json.loads(r.read().decode("utf-8"))
-            return url + info["url"].lstrip("/"), info.get("phone") or []
+            return url + info["url"].lstrip("/"), info.get("phone") or [], info.get("network") or []
     except urllib.error.HTTPError as e:
         try:
             message = json.loads(e.read().decode("utf-8"))["error"]
@@ -2793,6 +2846,47 @@ def print_phone(urls):
     print("Anyone on your Tailscale network can open and edit your boards.")
 
 
+def print_network(urls, allow=()):
+    print(f"On your network: {'  or  '.join(urls)}")
+    if sys.stdout.isatty():
+        print("Scan it with your phone's camera:")
+        print(qr_text(urls[0]))
+    if allow:
+        ranges = [str(n.network_address if n.prefixlen == 32 else n) for n in allow]
+        print(f"Kanvas answers there only to devices at {', '.join(ranges)}.")
+    print("It has no password: every device that reaches it there can open and edit your boards, "
+          "approve tasks and turn on YOLO, and so direct your agents.")
+
+
+def listen_address(text):
+    """A `--listen` address: one IPv4 address this computer has on a network it shares with other devices."""
+    try:
+        ip = ipaddress.IPv4Address(text.strip())
+    except ValueError:
+        raise KanvasError(f"--listen takes one IPv4 address of this computer, such as 192.168.1.50; got {text!r}")
+    if ip.is_unspecified:
+        raise KanvasError(f"--listen takes one address of this computer; {ip} would open your boards on every network it is on")
+    if ip.is_loopback:
+        raise KanvasError(f"--listen takes this computer's address on a network; {ip} reaches this computer only, where Kanvas listens already")
+    return str(ip)
+
+
+def listen_name(text):
+    """A `--listen-name`: a name or address devices type to reach a `--listen` address, as their Host header gives it."""
+    name = text.strip().lower().rstrip(".")
+    if not name or re.search(r"[\s/:@]", name):
+        raise KanvasError(f"--listen-name takes a name or an IPv4 address without a port, such as kanvas.home.lan; got {text!r}")
+    return name
+
+
+def allowed_network(text):
+    """An `--allow` range: an IPv4 network such as 192.168.1.0/24, or one address."""
+    try:
+        return ipaddress.IPv4Network(text.strip(), strict=False)
+    except ValueError:
+        raise KanvasError(f"--allow takes a range of IPv4 addresses such as 192.168.1.0/24, or one address; got {text!r}")
+
+
 def offer_board():
     """Ask the person at the terminal to set up Kanvas; return the new board's path, or None."""
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
@@ -2828,6 +2922,13 @@ def cmd_serve(args):
     local = args.host in ("127.0.0.1", "localhost")
     if args.tailscale and not local:
         raise KanvasError("Use --tailscale or --host, not both: --tailscale serves on this computer and on its Tailscale address.")
+    listen = list(dict.fromkeys(listen_address(a) for a in args.listen or []))
+    names = list(dict.fromkeys(listen_name(n) for n in args.listen_name or []))
+    allow = list(dict.fromkeys(allowed_network(a) for a in args.allow or []))
+    if listen and not local:
+        raise KanvasError("Use --listen or --host, not both: --listen serves on this computer and on the address you give it.")
+    if (names or allow) and not listen:
+        raise KanvasError("--allow and --listen-name go with --listen, the address they apply to.")
     # One Kanvas serves the boards of every project; a second `serve` hands its board to it and returns.
     running = find_running(args.port, args.host) if args.port and local else None
     if running and not path:
@@ -2835,7 +2936,7 @@ def cmd_serve(args):
         return
     if running:
         url, version = running
-        board_url, phone_urls = join_running(url, path)
+        board_url, phone_urls, network_urls = join_running(url, path)
         print(f"Kanvas board: {path}")
         if hint := agent_copy_hint(path):
             print(hint)
@@ -2844,6 +2945,10 @@ def cmd_serve(args):
             print_phone(phone_urls)
         elif args.tailscale:
             print("That Kanvas is not open to your phone. Stop it (Ctrl+C in its terminal) and run `kanvas serve --tailscale` there.")
+        if network_urls:
+            print_network(network_urls)
+        if set(listen) - {urlparse(u).hostname for u in network_urls}:
+            print("That Kanvas keeps the addresses it started with. Stop it (Ctrl+C in its terminal) and run this command again to use --listen.")
         if version != VERSION:
             print(f"That Kanvas is {version} and this command is {VERSION}; to switch, stop it (Ctrl+C in its terminal) and run `kanvas serve` again.")
         if not args.no_open:
@@ -2858,6 +2963,12 @@ def cmd_serve(args):
             raise
     elif server.phone_wanted:
         server.open_to_phone_soon()
+    if listen:
+        try:
+            server.open_to_network(listen, names, allow)
+        except KanvasError:
+            server.server_close()
+            raise
     host, port = server.server_address[:2]
     base_url = f"http://{'127.0.0.1' if host in ('0.0.0.0', '') else host}:{port}/"
     if path:
@@ -2874,6 +2985,8 @@ def cmd_serve(args):
         print(f"Also open from last time: {', '.join(others)}")
     if server.phone:
         print_phone([f"{base}{name}/" if name else base for base in server.phone])
+    if listen:
+        print_network([f"{base}{name}/" if name else base for base in server.network], allow)
     print("Boards of other projects open here too: run `kanvas serve` in them.")
     if not server.check_host:
         print("Warning: listening beyond localhost; anyone who can reach this port can edit the board.")
@@ -3182,6 +3295,14 @@ def build_parser():
                         "when a Kanvas already runs on any of these ports, serve opens the board there and returns")
     p.add_argument("--host", default="127.0.0.1", help="use 0.0.0.0 for containers or remote machines")
     p.add_argument("--tailscale", action="store_true", help="also open the boards to your phone and other devices on your Tailscale network")
+    p.add_argument("--listen", action="append", metavar="ADDRESS",
+                   help="also serve the boards on this address of the computer, such as 192.168.1.50 on your home network or VPN, "
+                        "until Kanvas stops; there is no password, so every device that reaches that address can edit them; repeatable")
+    p.add_argument("--allow", action="append", metavar="RANGE",
+                   help="with --listen: answer only devices in this range of addresses there, such as 192.168.1.0/24; repeatable")
+    p.add_argument("--listen-name", action="append", metavar="NAME",
+                   help="with --listen: another name or address devices reach that address by, such as a DNS name "
+                        "or the outside address of a port forward; repeatable")
     p.add_argument("--saved", action="store_true", help="serve only the boards open last time, without a project of its own (for `kanvas service`)")
     p.add_argument("--no-open", action="store_true", help="do not open a browser")
     p = add("close", cmd_close, "close this board without deleting its file; the last board stops Kanvas")
