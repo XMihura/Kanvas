@@ -914,7 +914,7 @@ const ICONS = {
   check: '<path d="M20 6 9 17l-5-5"/>',
   done: '<circle cx="12" cy="12" r="9"/><path d="m8 12.5 2.8 2.8L16 9.5"/>',
   select: '<rect x="3.5" y="3.5" width="17" height="17" rx="3.5"/><path d="m8 12.5 2.8 2.8L16 9.5"/>',
-  send: '<path d="M21 3 10.5 13.5M21 3l-6.5 18-4-7.5-7.5-4z"/>',
+  review: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="m16 11 2 2 4-4"/>',
   back: '<path d="M9 14 4 9l5-5"/><path d="M4 9h11a5 5 0 0 1 5 5v6"/>',
   undo: '<path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/>',
   redo: '<path d="m15 14 5-5-5-5"/><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13"/>',
@@ -3831,7 +3831,7 @@ function stateMoves(t) {
       { label: "Reject", icon: "trash", run: () => removeTask(t), danger: true, asks: true }];
     case "todo": return [{ label: "Start", icon: "play", run: to("doing"), to: "doing", primary: true }, skip];
     case "blocked": return [skip];
-    case "doing": return [{ label: "Send to review", icon: "send", run: to("review"), to: "review", primary: true }, { label: "Mark done", icon: "done", run: to("done"), to: "done" }, { label: "Pause", icon: "pause", run: to("todo"), to: "todo" }];
+    case "doing": return [{ label: "Send to review", icon: "review", run: to("review"), to: "review", primary: true }, { label: "Mark done", icon: "done", run: to("done"), to: "done" }, { label: "Pause", icon: "pause", run: to("todo"), to: "todo" }];
     case "review": return [{ label: "Mark done", icon: "done", run: () => review(t, "done"), to: "done", primary: true }, { label: "Send back", icon: "back", run: () => sendBack(t), to: "todo", asks: true }];
     case "done": return [{ label: "Reopen", icon: "back", run: to("todo"), to: "todo" }];
     default: return [];
