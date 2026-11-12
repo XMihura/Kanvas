@@ -912,6 +912,9 @@ const ICONS = {
   moon: '<path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/>',
   trash: '<path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/>',
   check: '<path d="M20 6 9 17l-5-5"/>',
+  done: '<circle cx="12" cy="12" r="9"/><path d="m8 12.5 2.8 2.8L16 9.5"/>',
+  select: '<rect x="3.5" y="3.5" width="17" height="17" rx="3.5"/><path d="m8 12.5 2.8 2.8L16 9.5"/>',
+  review: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="m16 11 2 2 4-4"/>',
   back: '<path d="M9 14 4 9l5-5"/><path d="M4 9h11a5 5 0 0 1 5 5v6"/>',
   undo: '<path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/>',
   redo: '<path d="m15 14 5-5-5-5"/><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13"/>',
@@ -3816,15 +3819,20 @@ const moveTo = (t, state) => undoable(ops.state(t.id, seenOf(t), state), moveWor
 const unlink = (id, dep) => undoable(ops.removeDep(id, dep), `${id} no longer waits for ${dep}`);
 
 // `asks` marks moves that open a dialog first.
+// `quiet` marks the shortcut to Done from the states before work starts: menus and the D key offer it, and the
+// panel's buttons keep to the next step.
 function stateMoves(t) {
   const to = (state) => () => moveTo(t, state);
+  const skip = { label: "Mark done", icon: "done", run: to("done"), to: "done", quiet: true };
   switch (vstate(t)) {
     case "proposed": return [{ label: "Approve", icon: "check", run: to("todo"), to: "todo", primary: true },
       ...(changeRequest(t) ? [] : [{ label: "Ask for changes", icon: "edit", run: () => askChanges(t), asks: true }]),
+      skip,
       { label: "Reject", icon: "trash", run: () => removeTask(t), danger: true, asks: true }];
-    case "todo": return [{ label: "Start", icon: "play", run: to("doing"), to: "doing", primary: true }];
-    case "doing": return [{ label: "Send to review", icon: "check", run: to("review"), to: "review", primary: true }, { label: "Mark done", icon: "check", run: to("done"), to: "done" }, { label: "Pause", icon: "pause", run: to("todo"), to: "todo" }];
-    case "review": return [{ label: "Mark done", icon: "check", run: () => review(t, "done"), to: "done", primary: true }, { label: "Send back", icon: "back", run: () => sendBack(t), to: "todo", asks: true }];
+    case "todo": return [{ label: "Start", icon: "play", run: to("doing"), to: "doing", primary: true }, skip];
+    case "blocked": return [skip];
+    case "doing": return [{ label: "Send to review", icon: "review", run: to("review"), to: "review", primary: true }, { label: "Mark done", icon: "done", run: to("done"), to: "done" }, { label: "Pause", icon: "pause", run: to("todo"), to: "todo" }];
+    case "review": return [{ label: "Mark done", icon: "done", run: () => review(t, "done"), to: "done", primary: true }, { label: "Send back", icon: "back", run: () => sendBack(t), to: "todo", asks: true }];
     case "done": return [{ label: "Reopen", icon: "back", run: to("todo"), to: "todo" }];
     default: return [];
   }
@@ -4158,7 +4166,7 @@ function nowCard(t, vs, ro, note) {
     track ? h("div", { class: "now-yolo-pick" }, track, off) : null) : null;
   const ya = ro || editing || t.yolo || via || stop || !["proposed", "todo", "blocked"].includes(vs) ? null
     : { label: "YOLO up to here…", icon: "zap", run: () => startYolo(t, "on") };
-  const moves = ro || editing ? [] : stateMoves(t);
+  const moves = ro || editing ? [] : stateMoves(t).filter((m) => !m.quiet);
   const gone = q && !ro && !editing ? h("button", { class: "dismiss", title: "No reply is coming in the chat: clear the question with a note", onclick: dismiss }, icon("x"), "Dismiss") : null;
   return h("div", { class: `now s-${q ? "ask" : vs}` },
     h("div", { class: "now-head" }, mark, headline, who, note && !ro && !editing ? noteEditBtn(t, note) : null),
@@ -4628,13 +4636,13 @@ function applyMulti() {
 // What the selected tasks can have done to them together, for the bar under them and their menu.
 function multiActions() {
   const tasks = board.tasks.filter((t) => multi.has(key(t.id)));
-  const proposals = tasks.filter((t) => vstate(t) === "proposed"), reviews = tasks.filter((t) => t.state === "review");
+  const proposals = tasks.filter((t) => vstate(t) === "proposed"), open = tasks.filter((t) => t.state !== "done");
   // An action leaves the tasks it did not apply to selected, for the next one.
   const run = (fn, done) => () => fn(done).then((ok) => { if (ok) { for (const t of done) multi.delete(key(t.id)); applyMulti(); } });
   return {
     tasks,
     approve: proposals.length ? { label: `Approve ${proposals.length}`, icon: "check", run: run(approveMany, proposals) } : null,
-    done: reviews.length ? { label: `Mark ${reviews.length} done`, icon: "check", run: run(doneMany, reviews) } : null,
+    done: open.length ? { label: `Mark ${open.length} done`, icon: "done", run: run(doneMany, open) } : null,
     remove: { label: `Delete ${tasks.length}`, icon: "trash", danger: true, run: run(removeMany, tasks) },
   };
 }
@@ -4805,7 +4813,7 @@ function groupsDialog(kept = {}) {
 
 const SHORTCUTS = [
   ["Moving around", [["← / ↑ / ↓ / →", "Select the next card in that direction"], ["Enter", "Move into the selected task's panel, where Tab goes round its controls"], ["Esc", "Leave the panel, close it, or clear the filter"], ["/", "Filter tasks"], ["Shift+← / Shift+→", "Previous or next open board"]]],
-  ["The selected task", [["A", "Approve the selected proposal"], ["S", "Start the selected task"], ["D", "Mark the selected task done"], ["P", "Pause the selected task"], ["E", "Rename the selected task"], ["Del / Backspace", "Delete the selected task, or reject it if it is a proposal"], ["Ctrl+click", "Select several cards, then approve, finish or delete them together with the bar, A, D or Del"], ["Right-click", "Actions for a card, a dependency or empty space"]]],
+  ["The selected task", [["A", "Approve the selected proposal"], ["S", "Start the selected task"], ["D", "Mark the selected task done"], ["P", "Pause the selected task"], ["E", "Rename the selected task"], ["Del / Backspace", "Delete the selected task, or reject it if it is a proposal"], ["Ctrl+click", "Select several cards, then approve them, mark them done or delete them together with the bar, A, D or Del"], ["Right-click", "Actions for a card, a dependency or empty space"]]],
   ["Views", [["G / B", "Graph or board view"], ["L", "Graph left to right or top to bottom"], ["M", "Automatic layout, or order cards and groups yourself by dragging them"], ["H", "Show all done tasks, or compact them"], ["F", "Fit the graph to the screen"], ["+ / -", "Zoom"], ["[ / ]", "Compress or extend the graph"]]],
   ["Editing", [["N", "New task"], ["Ctrl+Enter", "Save the text you are editing"], ["Ctrl+Z", "Undo your last change"], ["Ctrl+Shift+Z / Ctrl+Y", "Redo"]]],
 ];
@@ -5179,7 +5187,7 @@ function cardMenu(t) {
   const picked = multi.has(key(t.id));
   return [
     open,
-    { label: picked ? "Unselect" : multi.size ? "Add to the selection" : "Select", icon: "check", run: () => toggleMulti(t.id) },
+    { label: picked ? "Unselect" : multi.size ? "Add to the selection" : "Select", icon: picked ? "x" : "select", run: () => toggleMulti(t.id) },
     "sep",
     ...stateMoves(t).filter((m) => !m.danger).map((m) => ({ ...m, label: m.asks ? `${m.label}…` : m.label })),
     "sep",
