@@ -2394,6 +2394,10 @@ def human_events(old_board, new_board):
 
 def notify_human_changes(board_path, old_board, new_board, status="pending"):
     """Tell the connected agent session about each human change; return the deliveries made."""
+    # A board no agent session ever connected to keeps no notices: Kanvas without agents writes nothing more.
+    if not os.path.isdir(os.path.join(agents_dir(board_path), "sessions")):
+        return []
+    prune_agents(board_path)
     out = []
     for kind, task, title, text in human_events(old_board, new_board):
         # With no session connected, the notice waits for the first one that connects.

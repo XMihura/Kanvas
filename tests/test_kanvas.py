@@ -3449,7 +3449,12 @@ class AgentChannelTests(TempBoard):
         self.assertIn("waits for the human's review", lines[1])
         self.assertIn("waits for DV-02, DV-05", lines[2])
 
+    def test_a_board_without_agents_keeps_no_notices(self):
+        self.save_from_browser(lambda b: self.task_in(b, "DV-04").update(state="todo"))
+        self.assertFalse(os.path.exists(kanvas.agents_dir(self.path)))
+
     def test_a_save_from_the_browser_tells_the_agent(self):
+        os.remove(self.channel().session_path())  # a session connected once, and left
         self.save_from_browser(lambda b: self.task_in(b, "DV-04").update(state="todo"))
         [waiting] = kanvas.deliveries(self.path)
         self.assertEqual((waiting["kind"], waiting["session"]), ("approved", None), "it waits for a session to connect")
