@@ -3469,6 +3469,15 @@ class AgentChannelTests(TempBoard):
         self.assertIn("Other tasks you heard about", note["params"]["content"])
         self.assertIn("- DV-04 Task DV-04: todo", note["params"]["content"], "what the human did meanwhile")
 
+    def test_approved_and_new_tasks_ask_the_agent_to_look_for_missing_dependencies(self):
+        board = self.board()
+        for kind in ("approved", "created"):
+            text = kanvas.event_message({"id": "d-000000000001", "kind": kind, "task": "DV-02", "title": "Task DV-02"}, board)
+            self.assertIn("does not depend on yet", text)
+            self.assertIn("only once they agree", text)
+        text = kanvas.event_message({"id": "d-000000000001", "kind": "note", "task": "DV-02", "title": "Task DV-02", "text": "x"}, board)
+        self.assertNotIn("does not depend on yet", text)
+
     def test_an_undone_click_is_not_delivered(self):
         ch = self.channel()
         self.save_from_browser(lambda b: self.task_in(b, "DV-04").update(state="todo"))

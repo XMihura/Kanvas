@@ -2504,6 +2504,13 @@ def plan_lines(board, task_id):
     return lines
 
 
+# The board knows only the dependencies someone declared. The agent, which sees the code, checks for the others when
+# a task is approved or created, and proposes them to the human instead of adding them itself.
+DEPENDENCY_CHECK = ("First check whether it needs the result of another unfinished task on the board that it does not "
+                    "depend on yet. If it does, do not start it: tell the human which task and why, and add the "
+                    "dependency (`kanvas depend ID ON`) only once they agree.")
+
+
 def event_message(d, board, known=(), ack=None):
     """The text the agent reads for a delivery, from the board as it is now. `known` are other tasks the session
     heard about before: their state now goes along, since the human may have moved them while it was not told."""
@@ -2522,8 +2529,8 @@ def event_message(d, board, known=(), ack=None):
     do = {
         "work": f"They ask you to work on it: `kanvas show {tid}`, then `kanvas start {tid}`.",
         "start": f"They clicked Start, which means: work on it. `kanvas start {tid}` takes it over from them.",
-        "approved": f"It is approved. If you are not in the middle of another task and it is ready, start it now "
-                    f"(`kanvas start {tid}`); otherwise take it when you finish. If something must happen first, say what.",
+        "approved": f"It is approved. {DEPENDENCY_CHECK} If you are not in the middle of another task and it is ready, "
+                    f"start it now (`kanvas start {tid}`); otherwise take it when you finish.",
         "accepted": "It is done: the human reviewed and accepted your work. "
                     + (f"Approved tasks it was holding back are now ready: {', '.join(ready_after)}. Go on with them in that order."
                        if ready_after else "Nothing else was waiting on it."),
@@ -2536,7 +2543,8 @@ def event_message(d, board, known=(), ack=None):
         "paused": "Stop working on it now and leave it as it is.",
         "reopened": "It is back in to do: it needs more work. Read the notes before starting it again.",
         "moved": f"Its state changed ({text}). Check `kanvas show {tid}` before doing anything more on it.",
-        "created": "A new task. Look at it with `kanvas show " + tid + "` and start it only if it is ready and you were asked.",
+        "created": f"A new task. Look at it with `kanvas show {tid}`. {DEPENDENCY_CHECK} "
+                   "Start it only if it is ready and you were asked.",
         "edited": f"Its title, description or dependencies changed: re-read it with `kanvas show {tid}`.",
         "yolo_on": "Work through the chain without asking: every task it depends on, dependencies first, then this one, "
                    "which goes to review. Tasks that wait for the human (approval or review) stay with them: skip them and say so.",
