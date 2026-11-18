@@ -160,6 +160,42 @@ There are three ways to open it:
 | Open `kanvas.html` directly | The project has a copy in `.agents/skills/kanvas/`. In Chrome or Edge, choose your `kanvas.json` and the page reads and writes it in place, with live updates. Other browsers edit a copy in the tab; **Save** downloads it. |
 | `kanvas export` | A single self-contained, read-only HTML snapshot to share or attach to a pull request. |
 
+## Send tasks to an agent session
+
+Work in the board and let the agent know without copying anything into its chat. With a Claude Code session connected to the board, every click of yours reaches it: approving a proposal, **Start**, **YOLO up to here**, accepting or sending back its work, asking for changes, notes and answers to its questions. Each notice says what to do and, from the dependencies, what has to come first, so the agent tells you when a click needs another step before it. Ready tasks also get **Send to <session>**. The session confirms each notice, and the task panel and a toast show where it stands: told, received, or why it was not delivered. A notice that you undo before it arrives is dropped. Nothing changes in the workflow: the agent still starts tasks with `kanvas start`, which refuses proposals and blocked tasks, and its finished work waits for your review without a notice.
+
+This uses Claude Code [channels](https://code.claude.com/docs/en/channels), a research preview. Add Kanvas to the project's `.mcp.json`:
+
+```json
+{ "mcpServers": { "kanvas": { "command": "kanvas", "args": ["channel"] } } }
+```
+
+and start Claude Code in the project with the channel enabled:
+
+```bash
+claude --dangerously-load-development-channels server:kanvas
+```
+
+While that session runs, **Send to Claude Code · <folder>** appears next to `work on ID` on ready tasks. `--label NAME` after `channel` names the session in the board.
+
+- **Approve** asks a connected agent to start the task when it is ready and the agent has nothing else in hand; without a connected session it only makes the task available, as before.
+- Notices come from boards served by `kanvas serve`, from this computer and from your phone over Tailscale alike. A `kanvas.html` opened directly from disk tells no agent.
+- On a board an agent session has connected to before, clicks made while none is connected wait for the first one that connects. Boards that never had one keep no notices. Each notice is written before the board is saved and goes out only once the board shows the change, so a crash in between neither loses it nor sends a change that was not kept. A notice the agent never confirmed may come again after a crash: the agent checks the board before acting on it.
+- A task in progress with nothing happening on it for a day says so in its panel and in the notices, since its agent may be gone: pause it, then start it or send it to an agent.
+- A notice that arrives while Claude is in the middle of its work is shown to it as a message from outside the conversation. Claude sees it but, as a safety measure, may ask you in its chat before acting on it, and leaves it unconfirmed; the panel says so.
+- Agents without the channel's tool confirm a notice with `kanvas ack DELIVERY_ID`.
+
+**Codex** works the same way through its app server (experimental in Codex). Run the app server, open Codex on it in the project, and connect the board:
+
+```bash
+codex app-server --listen ws://127.0.0.1:4545          # leave it running
+codex --remote ws://127.0.0.1:4545                    # in the project: your Codex conversation
+kanvas codex --server ws://127.0.0.1:4545             # in the project: tells that conversation about your clicks
+```
+
+`kanvas codex` finds the Codex conversation open in the project (with several, pick one with `--thread ID`). A notice becomes a message in it: a new turn when Codex is idle, or added to the turn it is working on. The agent confirms it with `kanvas ack`.
+- Sessions and notices are kept in your user folder, not in the project, and notices are deleted after a week.
+
 ## On your phone
 
 Kanvas can open your boards on your phone, or on another computer, through [Tailscale](https://tailscale.com), a free private network between your own devices.
