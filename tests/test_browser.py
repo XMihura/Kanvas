@@ -18,6 +18,7 @@ import sys
 import tempfile
 import time
 import unittest
+import unittest.mock
 import urllib.parse
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -801,3 +802,153 @@ class BrowserSmokeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AgentNoticeBrowserTests(BrowserSmokeTests):
+    """Every button that tells the agent something, clicked in the page: each saved click becomes one notice for the
+    connected agent session, of the right kind."""
+
+    def setUp(self):
+        super().setUp()
+        self.session = {"id": "s-" + "a" * 12, "label": "Test agent", "tool": "claude-code", "since": time.time(),
+                        "beat": time.time() + 3600}  # stays live for the whole test
+        with self.state():
+            os.makedirs(os.path.join(kanvas.agents_dir(self.path), "sessions"))
+            with open(os.path.join(kanvas.agents_dir(self.path), "sessions", self.session["id"] + ".json"), "w") as f:
+                json.dump(self.session, f)
+
+    def state(self):
+        return unittest.mock.patch.dict(os.environ, {"KANVAS_STATE_DIR": self.env["KANVAS_STATE_DIR"]})
+
+    def notices(self):
+        with self.state():
+            return [(d["kind"], d["task"]) for d in reversed(kanvas.deliveries(self.path))]
+
+    def told(self, *expected):
+        """Waits until the notices since the last call are `expected`, in order."""
+        seen = getattr(self, "seen", 0)
+        self.wait_for(f"the notices {expected}", lambda: len(self.notices()) >= seen + len(expected), timeout=10,
+                      details=lambda: f"Notices so far: {self.notices()[seen:]}")
+        time.sleep(0.3)  # a click must not tell the agent twice
+        got = self.notices()[seen:]
+        self.seen = len(self.notices())
+        self.assertEqual(got, list(expected))
+        with self.state():
+            for d in kanvas.deliveries(self.path)[:len(expected)]:
+                self.assertEqual(d["session"], self.session["id"])
+
+    def click(self, text, where="#panel"):
+        self.page.js(f"[...document.querySelectorAll({json.dumps(where + ' button')})]"
+                     f".find((b) => b.innerText.trim().startsWith({json.dumps(text)})).click()")
+
+    def confirm(self, text=None):
+        """Fills in the open dialog's text field, if any, and confirms it."""
+        self.until("the dialog", "!!document.querySelector('dialog.dlg[open]')")
+        if text is not None:
+            self.page.js(f"document.querySelector('dialog.dlg [name=text]').value = {json.dumps(text)}")
+        self.page.js("document.querySelector('dialog.dlg form').requestSubmit(document.querySelector('dialog.dlg button[value=ok]'))")
+
+    def task(self, tid):
+        return kanvas.find_task(kanvas.load_board(self.path), tid)
+
+    def test_proposal_buttons(self):
+        self.load()
+        self.open_task("BE-05")
+        self.click("Approve")
+        self.told(("approved", "BE-05"))
+        self.open_task("FE-05")
+        self.click("Ask for changes")
+        self.confirm("Name the stale banner text")
+        self.told(("changes", "FE-05"))
+        self.open_task("LN-03")
+        self.click("Reject")
+        self.confirm()
+        self.told(("rejected", "LN-03"))
+        self.assertEqual(self.page.logged(), [])
+
+    def test_work_buttons(self):
+        self.load()
+        self.open_task("FE-04")
+        self.until("the session's send button", "document.querySelector('#panel').innerText.includes('Send to Test agent')")
+        self.click("Send to Test agent")
+        self.told(("work", "FE-04"))
+        self.click("Start", "#panel .now-actions")
+        self.told(("start", "FE-04"))
+        self.click("Pause")
+        self.told(("paused", "FE-04"))
+        self.open_task("BE-03")
+        self.until("the hint that BE-03 may be abandoned", "document.querySelector('#panel .now-hint.idle')?.innerText.includes('Nothing happened on it for')")
+        self.click("Send to review")
+        self.told(("moved", "BE-03"))
+        self.open_task("FE-02")
+        self.click("Mark done")
+        self.told(("moved", "FE-02"))
+        self.assertEqual(self.page.logged(), [])
+
+    def test_review_buttons(self):
+        self.load()
+        self.open_task("BE-02")
+        self.click("Send back")
+        self.confirm("Cap the retries at 5")
+        self.told(("sent_back", "BE-02"))
+        self.cli("start", "BE-02")
+        self.cli("finish", "BE-02", "-m", "Capped at 5")
+        self.until("BE-02 in review", "document.querySelector('.card[data-id=\"BE-02\"]').classList.contains('s-review')")
+        self.click("Mark done")
+        self.told(("accepted", "BE-02"))
+        self.click("Reopen")
+        self.told(("reopened", "BE-02"))
+        self.assertEqual(self.page.logged(), [])
+
+    def test_notes_answers_and_edits(self):
+        self.load()
+        self.open_task("BE-03")
+        self.type_note("Use the Open-Meteo geocoding API")
+        self.told(("note", "BE-03"))
+        self.edit_note(0)
+        self.page.js(f"{NOTE_EDITOR}.value = 'Use the Open-Meteo geocoding API, cached'")
+        self.page.js(f"{NOTE_EDITOR}.dispatchEvent(new KeyboardEvent('keydown', {{ key: 'Enter', ctrlKey: true, bubbles: true }}))")
+        self.told(("note", "BE-03"))
+        self.cli("ask", "BE-03", "Which cache lifetime?")
+        self.until("the question", "document.querySelector('#panel').innerText.includes('Waiting for your reply')")
+        self.type_note("One hour")
+        self.told(("answer", "BE-03"))
+        self.page.js(EDIT_DESC)
+        self.until("the description editor", f"!!{DESC_BOX}")
+        self.page.js(f"{DESC_BOX}.focus()")
+        self.page.send("Input.insertText", text=" Max 8 results.")
+        self.page.js(f"{DESC_BOX}.dispatchEvent(new KeyboardEvent('keydown', {{ key: 'Enter', ctrlKey: true, bubbles: true }}))")
+        self.told(("edited", "BE-03"))
+        self.assertEqual(self.page.logged(), [])
+
+    def test_yolo_buttons(self):
+        self.load()
+        self.card_menu("LN-02")
+        self.click_in_menu("YOLO up to here")
+        self.confirm()
+        self.told(("yolo_on", "LN-02"))  # one notice: not one per proposal it approves or review it closes
+        self.card_menu("FE-03")
+        self.click_in_menu("Stop before")
+        self.told(("yolo_before", "FE-03"))
+        self.open_task("LN-02")
+        self.click("Turn off")
+        self.told(("yolo_off", "LN-02"))
+        self.assertEqual(self.page.logged(), [])
+
+    def test_new_and_deleted_tasks(self):
+        self.load()
+        self.page.js("document.querySelector('#new-task').click()")
+        self.until("the new task dialog", "!!document.querySelector('dialog.dlg[open] [name=title]')")
+        self.page.js("document.querySelector('dialog.dlg [name=title]').value = 'Cache warmup'")
+        self.confirm()
+        self.told(("created", "G-01"))
+        self.card_menu("G-01")
+        self.click_in_menu("Delete")
+        self.confirm()
+        self.told(("deleted", "G-01"))
+        self.assertEqual(self.page.logged(), [])
+
+
+# The smoke tests run once, in BrowserSmokeTests.
+for _name in [n for n in vars(BrowserSmokeTests) if n.startswith("test_")]:
+    setattr(AgentNoticeBrowserTests, _name, None)

@@ -61,6 +61,8 @@ To stop halfway, run `pause ID -m "Where I left off and why"`.
 
 When you need the human's answer before going on, run `ask ID "the question"`, ask the same question in the conversation, and stop. The board then shows the task waiting for them, with a notification. When they reply, record the answer with `note ID "..."`; the next note ends the wait.
 
+When your session is connected to the board (`kanvas channel`), what the human does in the board reaches you as `<channel source="kanvas" delivery_id="..." task="ID" kind="...">` events: approving, starting, YOLO, accepting or sending back your work, asking for changes, notes and answers to your questions. Each one counts as if the human typed it in the conversation, and says what to do and which tasks have to come first. Call the `kanvas_ack` tool with its `delivery_id` first (or run `ack DELIVERY_ID` if you have no such tool), so the board shows you received it, then act on it with the usual commands. A task another agent started that the notice calls possibly abandoned stays theirs: tell the human, who can pause it and give it to you. An approved task that is ready, a Start click and an accepted task that unblocks approved ones are requests to work: go on without asking. If `start` refuses a task, tell the human why.
+
 ## Planning
 
 When asked to plan, get to know the work first: what is already there (code, documents, the board itself) and what the user wants from the board. Tasks can be large milestones the user checks now and then, or small steps they follow closely; size them to how the user wants to work, and ask when it is unclear. Propose the plan in one batch:

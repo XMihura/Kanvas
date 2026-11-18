@@ -357,6 +357,10 @@ button.yolo-go, button.yolo-go:hover { border: 0; color: var(--yolo-ink); font-w
 button.primary.to { background: var(--c-fill); border-color: var(--c-fill); color: var(--fill-text); }
 button.say { padding: 1px 6px; gap: 5px; font: 600 12px var(--mono); vertical-align: baseline; }
 .say .icon svg { width: 12px; height: 12px; }
+button.say.send { margin: 2px 4px 2px 0; font-family: inherit; }
+.now-hint.delivery.wait span::before { content: "● "; color: var(--doing); }
+.now-hint.delivery.ok span::before { content: "✓ "; color: var(--done); }
+.now-hint.delivery.bad span::before { content: "! "; color: var(--danger); font-weight: 700; }
 .p-sec { display: flex; flex-direction: column; gap: 6px; }
 .p-sec + .p-sec { padding-top: 14px; border-top: 1px solid var(--border); }
 .section-head { display: flex; align-items: center; gap: 8px; min-height: 24px; font-size: 11.5px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
@@ -2029,6 +2033,8 @@ let pending = 0;
 let lost = null;        // why the page cannot reach the board, while it cannot; commit() refuses changes meanwhile
 let writes = 0;         // saves started, so a poll that overlapped one is dropped
 let saveQueue = Promise.resolve();
+// Agent sessions connected to this board with `kanvas channel`, and the latest requests sent to them (served boards only).
+let agents = { sessions: [], deliveries: [] }, agentsSeen = "", agentsKnown = null;
 
 const LEVEL_GAP = { min: 30, max: 500 };
 const MAX_ZOOM = 2, MIN_ZOOM = 0.2;
@@ -2267,8 +2273,90 @@ async function poll() {
     } catch (e) {
       setSync("bad", e.message, e.lost, e.closed);
     }
+    if (store.kind === "server") refreshAgents();
   }
   setTimeout(poll, POLL_MS);
+}
+
+// ---------------------------------------------------------------------------
+// Sending tasks to agent sessions
+// ---------------------------------------------------------------------------
+
+async function refreshAgents() {
+  let next = { sessions: [], deliveries: [] };
+  try {
+    const r = await fetch("api/agents", { cache: "no-store" });
+    if (r.ok) next = await r.json();
+  } catch (e) { /* the sync status already says Kanvas cannot be reached */ }
+  const seen = JSON.stringify(next);
+  if (seen === agentsSeen) return;
+  agentsSeen = seen;
+  agents = next;
+  // Say which of your clicks reached an agent: the server tells the connected session after each save.
+  const fresh = agentsKnown ? agents.deliveries.filter((d) => !agentsKnown.has(d.id) && d.kind !== "work") : [];
+  agentsKnown = new Set(agents.deliveries.map((d) => d.id));
+  const to = (d) => d.label || "the next agent session";
+  if (fresh.length > 2) toast(`Told ${to(fresh[0])} about ${fresh.length} changes`);
+  else for (const d of fresh.reverse()) toast(`Told ${to(d)}: ${EVENT_SAYS[d.kind] || d.kind} ${d.task}`);
+  if (ui.selected) renderPanel();
+}
+
+// What the agent was told, as the panel and the toasts say it.
+const EVENT_SAYS = {
+  work: "work on", start: "work on", approved: "approved", accepted: "accepted", sent_back: "sent back",
+  changes: "changes asked for", rejected: "rejected", deleted: "deleted", answer: "your answer on", note: "your note on",
+  paused: "paused", reopened: "reopened", moved: "moved", created: "created", edited: "edited",
+  yolo_on: "YOLO up to", yolo_before: "YOLO stops before", yolo_off: "YOLO off for",
+};
+
+const lastDelivery = (t) => agents.deliveries.find((d) => same(d.task, t.id)) || null;
+
+// Whole days with nothing happening on a task in progress, from one day on (idle_days in kanvas.py); else null.
+function idleDays(t, now = Date.now()) {
+  if (t.state !== "doing") return null;
+  const times = [...t.notes.map((n) => n.at), t.started && t.started.at].map((at) => Date.parse(at)).filter((x) => !isNaN(x));
+  if (!times.length) return null;
+  const idle = now - Math.max(...times);
+  return idle < 86400000 ? null : Math.floor(idle / 86400000);
+}
+
+// Asks a connected session to work on an approved task. The server checks the saved board, so the approval that
+// made the task ready must be saved first.
+async function sendToAgent(t, s) {
+  await saveQueue;
+  try {
+    const r = await fetch("api/agents/send", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ task: t.id, session: s.id }) });
+    const out = await r.json().catch(() => ({}));
+    if (!r.ok) { toast(`Not sent: ${out.error || `Kanvas answered ${r.status}`}`, "error"); return; }
+    toast(out.created ? `Sent ${t.id} to ${s.label}` : `${t.id} is already on its way to ${s.label}`);
+  } catch (e) {
+    toast("Not sent: Kanvas cannot be reached", "error");
+  }
+  agentsSeen = "";
+  refreshAgents();
+}
+
+function sendButtons(t) {
+  return agents.sessions.map((s) => h("button", { class: "say send", title: `Send "work on ${t.id}" to this agent session`, onclick: () => sendToAgent(t, s) }, icon("play"), `Send to ${s.label}`));
+}
+
+// Where the last request for this task stands: sent, received by the session, confirmed by the agent, or failed.
+function deliveryHint(t) {
+  const d = lastDelivery(t);
+  // A notice the agent confirmed is news for a while, not for good.
+  if (!d || (d.status === "acked" && Date.now() / 1000 - d.updated > 600)) return null;
+  const who = d.label || "the agent", when = ago(new Date(d.updated * 1000).toISOString());
+  const what = `"${EVENT_SAYS[d.kind] || d.kind} ${d.task}"`;
+  const [cls, text] = {
+    pending: !d.session ? ["wait", `${what} waits for an agent session to connect`]
+      : d.online ? ["wait", `Telling ${who} ${what}…`] : ["bad", `Not delivered: ${who} is not connected`],
+    delivered: ["wait", Date.now() / 1000 - d.updated > 30
+      ? `Told ${who} ${what} · not confirmed: if it arrived while ${who} was working, ${who} may ask you about it in its chat`
+      : `Told ${who} ${what} · waiting for it to confirm`],
+    acked: ["ok", `${who} got ${what} · ${when}`],
+    failed: ["bad", `${what} not delivered to ${who}: ${d.error || "unknown reason"}`],
+  }[d.status] || ["bad", `Unknown delivery state ${d.status}`];
+  return h("div", { class: `now-hint delivery ${cls}`, title: new Date(d.created * 1000).toLocaleString() }, h("span", {}, text));
 }
 
 function applyRemote(fresh) {
@@ -4121,7 +4209,9 @@ function nowCard(t, vs, ro, note) {
   const [mark, headline, body] = q ? [icon("ask"), "Waiting for your reply", null] : cr ? [icon("edit"), "Changes requested", null] : {
     proposed: [icon("spark"), "Proposed", h("p", {}, "Approve it to make it available for work, ask for changes, or reject it.")],
     blocked: [icon("lock"), "Blocked", h("p", {}, "Starts when ", list(waits), waits.length > 1 ? " are done." : " is done.")],
-    todo: [icon("play"), "Ready to start", ro ? null : h("p", {}, "Start it yourself, or tell an agent ", say())],
+    todo: [icon("play"), "Ready to start", ro ? null : agents.sessions.length
+      ? h("p", {}, "Start it yourself, send it to an agent session: ", sendButtons(t), " or tell an agent ", say())
+      : h("p", {}, "Start it yourself, or tell an agent ", say())],
     doing: [mine ? icon("play") : h("i", { class: "live" }), "In progress", null],
     review: [icon("check"), "Ready for your review", null],
     done: [icon("check"), "Done", null],
@@ -4152,7 +4242,10 @@ function nowCard(t, vs, ro, note) {
       : body ? h("div", { class: "now-body md" }, body) : null,
     q && !editing ? h("div", { class: "now-hint" }, h("span", {}, `Reply in ${by}'s chat. This clears when ${by} carries on.`), gone) : null,
     cr && !editing ? h("div", { class: "now-hint" }, h("span", {}, `Waiting for ${author} to revise it. The next note from an agent clears the request.`)) : null,
-    mine && !q && !ro && !editing ? h("div", { class: "now-hint" }, h("span", {}, "You started it. An agent you tell to ", say(), " takes it over.")) : null,
+    mine && !q && !ro && !editing ? h("div", { class: "now-hint" }, h("span", {}, "You started it. An agent you tell to ", say(), " takes it over.", agents.sessions.length ? [" Or send it: ", sendButtons(t)] : null)) : null,
+    ro ? null : deliveryHint(t),
+    !ro && vs === "doing" && !mine && idleDays(t) != null ? h("div", { class: "now-hint idle" }, h("span", {},
+      `Nothing happened on it for ${idleDays(t)} day${idleDays(t) === 1 ? "" : "s"}. If nobody works on it any more, pause it, then start it or send it to an agent.`)) : null,
     yolo,
     moves.length || ya ? h("div", { class: "now-actions" },
       moves.map((m) => h("button", { class: m.primary ? `primary to s-${m.to}` : m.danger ? "danger" : "", title: m.to && !m.primary ? `Moves it to ${LABEL[m.to]}` : null, onclick: m.run }, icon(m.icon), m.label)),

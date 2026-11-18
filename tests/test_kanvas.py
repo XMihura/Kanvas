@@ -4,6 +4,7 @@ import argparse
 import atexit
 import base64
 import contextlib
+import hashlib
 import http.client
 import io
 import json
@@ -18,6 +19,7 @@ import tempfile
 import threading
 import time
 import unittest
+from datetime import datetime, timezone
 from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -3158,6 +3160,486 @@ class ServerTests(TempBoard):
         self.assertEqual(status, 200)
         text = self.raw().decode("utf-8")
         self.assertEqual(text, kanvas.dumps(kanvas.parse_board(text)))
+
+
+class AgentChannelTests(TempBoard):
+    """Sending approved tasks from the board to an agent session through `kanvas channel`."""
+
+    def setUp(self):
+        super().setUp()
+        self.server = kanvas.start_server(self.path, "127.0.0.1", 0, quiet=True)
+        self.port = self.server.server_address[1]
+        self.name = kanvas.board_name(self.path)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.addCleanup(self.server.server_close)
+        self.addCleanup(self.server.shutdown)
+        self.addCleanup(shutil.rmtree, kanvas.agents_dir(self.path), True)
+
+    def request(self, method, path, body=None, headers=None):
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        try:
+            conn.request(method, f"/{self.name}/api/agents{path}", body=body, headers=headers or {})
+            r = conn.getresponse()
+            return r.status, json.loads(r.read() or b"null")
+        finally:
+            conn.close()
+
+    def send(self, tid, sid):
+        return self.request("POST", "/send", json.dumps({"task": tid, "session": sid}), {"Content-Type": "application/json"})
+
+    def channel(self):
+        """A channel run in this process, with its protocol output collected."""
+        ch = kanvas.Channel(self.path, "test session", stdout=io.StringIO())
+        ch.beat()
+        ch.ready.set()
+        self.addCleanup(lambda: os.path.exists(ch.session_path()) and os.remove(ch.session_path()))
+        return ch
+
+    def sent(self, ch):
+        return [json.loads(line) for line in ch.stdout.getvalue().splitlines()]
+
+    def test_only_approved_ready_tasks_can_be_sent(self):
+        tasks = kanvas.task_map(self.board())
+        self.assertIsNone(kanvas.sendable(tasks["DV-02"], tasks))
+        self.assertIn("blocked by unfinished DV-02", kanvas.sendable(tasks["DV-03"], tasks))
+        self.assertIn("approve it first", kanvas.sendable(tasks["DV-04"], tasks))
+        self.assertIn("done", kanvas.sendable(tasks["DV-01"], tasks))
+        tasks["DV-02"].update(state="doing", started={"at": "2026-01-01T00:00:00Z", "by": "human"})
+        self.assertIsNone(kanvas.sendable(tasks["DV-02"], tasks), "a task the human started is taken over")
+        tasks["DV-02"]["started"]["by"] = "codex"
+        self.assertIn("started by codex", kanvas.sendable(tasks["DV-02"], tasks))
+
+    def test_channel_delivers_and_agent_acknowledges(self):
+        env = dict(os.environ, KANVAS_AGENT="")
+        proc = subprocess.Popen([sys.executable, SCRIPT, "channel", "--label", "my chat"], cwd=self.dir, env=env,
+                                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, encoding="utf-8")
+        self.addCleanup(proc.stdout.close)
+        self.addCleanup(proc.wait, 5)
+        self.addCleanup(proc.stdin.close)
+
+        def rpc(msg):
+            proc.stdin.write(json.dumps(msg) + "\n")
+            proc.stdin.flush()
+
+        rpc({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18", "capabilities": {}}})
+        init = json.loads(proc.stdout.readline())["result"]
+        self.assertEqual(init["capabilities"]["experimental"], {"claude/channel": {}})
+        self.assertNotIn("claude/channel/permission", init["capabilities"]["experimental"])
+        self.assertIn("kanvas_ack", init["instructions"])
+        rpc({"jsonrpc": "2.0", "method": "notifications/initialized"})
+        rpc({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
+        self.assertEqual([t["name"] for t in json.loads(proc.stdout.readline())["result"]["tools"]], ["kanvas_ack"])
+
+        deadline = time.monotonic() + 5
+        while True:
+            status, info = self.request("GET", "")
+            if info["sessions"] or time.monotonic() > deadline:
+                break
+            time.sleep(0.05)
+        self.assertEqual(status, 200)
+        self.assertEqual([s["label"] for s in info["sessions"]], ["my chat"])
+        sid = info["sessions"][0]["id"]
+
+        self.assertEqual(self.send("DV-04", sid)[0], 409, "a proposal is approved first")
+        self.assertEqual(self.send("DV-03", sid)[0], 409, "a blocked task waits for its dependencies")
+        self.assertEqual(self.send("DV-02", "s-000000000000")[0], 409, "only connected sessions")
+        status, out = self.send("DV-02", sid)
+        self.assertEqual(status, 200)
+        self.assertTrue(out["created"])
+        did = out["delivery"]["id"]
+        self.assertEqual(self.send("DV-02", sid)[1], {"delivery": out["delivery"], "created": False})
+
+        note = json.loads(proc.stdout.readline())
+        self.assertEqual(note["method"], "notifications/claude/channel")
+        self.assertEqual(note["params"]["meta"], {"delivery_id": did, "task": "DV-02", "kind": "work", "board": self.name})
+        self.assertIn(did, note["params"]["content"])
+        self.assertEqual(self.request("GET", "")[1]["deliveries"][0]["status"], "delivered")
+
+        rpc({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "kanvas_ack", "arguments": {"delivery_id": did}}})
+        self.assertFalse(json.loads(proc.stdout.readline())["result"]["isError"])
+        delivery = self.request("GET", "")[1]["deliveries"][0]
+        self.assertEqual((delivery["status"], delivery["online"]), ("acked", True))
+        rpc({"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"name": "kanvas_ack", "arguments": {"delivery_id": "d-000000000000"}}})
+        self.assertTrue(json.loads(proc.stdout.readline())["result"]["isError"])
+        self.assertEqual(self.get("DV-02")["state"], "todo", "sending asks for work; the agent starts the task itself")
+
+        proc.stdin.close()
+        self.assertEqual(proc.wait(5), 0)
+        self.assertEqual(self.request("GET", "")[1]["sessions"], [], "a closed session leaves the board")
+
+    def test_channel_checks_the_task_again_before_delivering(self):
+        ch = self.channel()
+        d, _ = kanvas.work_request(self.path, "DV-02", ch.id)
+        self.run_cli("start", "DV-02", "--as", "codex")
+        ch.deliver_pending()
+        self.assertEqual(self.sent(ch), [], "a task another agent started is not sent")
+        d = kanvas.deliveries(self.path)[0]
+        self.assertEqual(d["status"], "failed")
+        self.assertIn("started by codex", d["error"])
+
+    def test_a_task_replaced_under_the_same_id_is_not_delivered(self):
+        ch = self.channel()
+        kanvas.work_request(self.path, "DV-02", ch.id)
+        board = self.board()
+        kanvas.find_task(board, "DV-02")["title"] = "Something else"
+        write_board(self.path, board)
+        ch.deliver_pending()
+        self.assertEqual(self.sent(ch), [])
+        self.assertIn("changed since it was sent", kanvas.deliveries(self.path)[0]["error"])
+
+    def test_requests_left_when_the_session_closes_fail(self):
+        ch = self.channel()
+        kanvas.work_request(self.path, "DV-02", ch.id)
+        ch.fail_pending("the agent session closed before the request reached it")
+        self.assertEqual(kanvas.deliveries(self.path)[0]["status"], "failed")
+        self.assertEqual(self.send("DV-02", ch.id)[0], 200, "a failed request can be sent again")
+
+    def test_a_silent_session_is_gone(self):
+        ch = self.channel()
+        self.assertTrue(kanvas.find_session(self.path, ch.id))
+        with mock.patch.object(kanvas.time, "time", return_value=time.time() + kanvas.SESSION_LIVE + 1):
+            self.assertEqual(kanvas.live_sessions(self.path), [])
+        with self.assertRaisesRegex(kanvas.KanvasError, "not connected"):
+            kanvas.work_request(self.path, "DV-02", "s-000000000000")
+
+    def test_sessions_are_per_board(self):
+        other = os.path.join(self.dir, "other", "kanvas.json")
+        os.makedirs(os.path.dirname(other))
+        write_board(other, self.initial_board())
+        self.addCleanup(shutil.rmtree, kanvas.agents_dir(other), True)
+        ch = self.channel()
+        self.assertEqual(kanvas.live_sessions(other), [])
+        with self.assertRaisesRegex(kanvas.KanvasError, "not connected"):
+            kanvas.work_request(other, "DV-02", ch.id)
+
+    def test_phones_may_tell_agents_but_other_sites_may_not(self):
+        ch = self.channel()
+        status, info = self.request("GET", "", headers={"X-Forwarded-For": "100.64.0.2"})
+        self.assertEqual((status, [s["id"] for s in info["sessions"]]), (200, [ch.id]))
+        status, _ = self.request("POST", "/send", json.dumps({"task": "DV-02", "session": ch.id}),
+                                 {"Content-Type": "application/json", "X-Forwarded-For": "100.64.0.2"})
+        self.assertEqual(status, 200)
+        # A form post, which another web site could make, is refused: JSON needs a CORS preflight.
+        self.assertEqual(self.request("POST", "/send", "task=DV-02", {"Content-Type": "application/x-www-form-urlencoded"})[0], 415)
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        conn.request("GET", f"/{self.name}/api/agents", headers={"Host": "evil.example"})
+        self.assertEqual(conn.getresponse().status, 403, "a page on another site cannot read the sessions")
+        conn.close()
+
+    def test_a_notice_staged_before_a_crash_goes_out_once_the_board_shows_the_change(self):
+        ch = self.channel()
+        old = self.board()
+        new = json.loads(json.dumps(old))
+        self.task_in(new, "DV-04")["state"] = "todo"
+        self.task_in(new, "DV-03")["notes"] = [{"at": "2026-01-01T00:00:00Z", "by": "human", "text": "Lost note"}]
+        staged = kanvas.notify_human_changes(self.path, old, new, "staged")
+        write_board(self.path, dict(new, tasks=[t if t["id"] != "DV-03" else self.task_in(old, "DV-03") for t in new["tasks"]]))
+        ch.deliver_pending()
+        self.assertEqual(self.sent(ch), [], "too early: the save may still be running")
+        with mock.patch.object(kanvas.time, "time", return_value=time.time() + kanvas.STAGED_GRACE + 1):
+            ch.deliver_pending()
+        status = {d["kind"]: (d["status"], d["error"]) for d in kanvas.deliveries(self.path)}
+        self.assertEqual(status["approved"], ("delivered", None), "the approval reached the board before the crash")
+        self.assertEqual(status["note"], ("failed", "the note is not on the board"))
+        self.assertEqual(len(staged), 2)
+
+    def test_a_failed_save_drops_its_notices(self):
+        self.channel()
+        with mock.patch.object(kanvas, "write_text_atomic", side_effect=OSError("disk full")):
+            conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+            conn.request("GET", f"/{self.name}/api/board")
+            r = conn.getresponse()
+            etag, board = r.getheader("ETag"), json.loads(r.read())
+            self.task_in(board, "DV-04")["state"] = "todo"
+            conn.request("PUT", f"/{self.name}/api/board", json.dumps(board), {"Content-Type": "application/json", "If-Match": etag})
+            self.assertEqual(conn.getresponse().status, 503)
+            conn.close()
+        self.assertEqual(kanvas.deliveries(self.path), [])
+
+    def test_the_cli_acknowledges_for_agents_without_a_channel_tool(self):
+        ch = self.channel()
+        d, _ = kanvas.work_request(self.path, "DV-02", ch.id)
+        self.assertIn("is pending", self.fails("ack", d["id"]))
+        ch.deliver_pending()
+        self.assertIn("Acknowledged", self.run_cli("ack", d["id"])[1])
+        self.assertIn("already acknowledged", self.run_cli("ack", d["id"])[1])
+        self.assertIn("Unknown delivery_id", self.fails("ack", "d-000000000000"))
+
+    def test_old_notices_and_dead_sessions_are_deleted(self):
+        ch = self.channel()
+        kanvas.work_request(self.path, "DV-02", ch.id)
+        later = time.time() + kanvas.KEEP_DELIVERIES + 1
+        kanvas.prune_agents(self.path, now=later)
+        self.assertEqual((kanvas.deliveries(self.path), os.listdir(os.path.join(kanvas.agents_dir(self.path), "sessions"))), ([], []))
+
+    def test_a_task_nobody_touched_for_a_day_may_be_abandoned(self):
+        t = task("DV-09", "doing", started={"at": "2026-01-01T00:00:00Z", "by": "codex"},
+                 notes=[{"at": "2026-01-03T00:00:00Z", "by": "codex", "text": "Halfway"}])
+        jan5 = datetime(2026, 1, 5, 1, tzinfo=timezone.utc).timestamp()
+        self.assertEqual(kanvas.idle_days(t, now=jan5), 2)
+        self.assertIsNone(kanvas.idle_days(t, now=jan5 - 3 * 86400 + 3600))
+        with mock.patch.object(kanvas.time, "time", return_value=jan5):
+            self.assertIn("nothing happened on it for 2 days: it may be abandoned", kanvas.doing_text(t))
+
+    def save_from_browser(self, change):
+        """Change the board as the browser does: read it, then PUT it back with its ETag."""
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        try:
+            conn.request("GET", f"/{self.name}/api/board")
+            r = conn.getresponse()
+            etag, board = r.getheader("ETag"), json.loads(r.read())
+            change(board)
+            conn.request("PUT", f"/{self.name}/api/board", json.dumps(board), {"Content-Type": "application/json", "If-Match": etag})
+            r = conn.getresponse()
+            r.read()
+            self.assertEqual(r.status, 200)
+        finally:
+            conn.close()
+
+    def task_in(self, board, tid):
+        return next(t for t in board["tasks"] if t["id"] == tid)
+
+    def test_human_changes_become_events(self):
+        old = self.board()
+        tasks = old["tasks"]
+        tasks[1]["notes"] = [{"at": "2026-01-01T00:00:00Z", "by": "claude", "text": "Question: which API?"}]
+        tasks[1]["state"] = "doing"
+        tasks.append(task("DV-05", "review", "DV"))
+        tasks.append(task("DV-06", "review", "DV"))
+        tasks.append(task("DV-07", "proposed", "DV"))
+        new = json.loads(json.dumps(old))
+        nt = {t["id"]: t for t in new["tasks"]}
+        nt["DV-04"]["state"] = "todo"
+        nt["DV-02"]["notes"].append({"at": "2026-01-01T00:01:00Z", "by": "human", "text": "OpenMeteo"})
+        nt["DV-05"]["state"] = "done"
+        nt["DV-06"]["state"] = "todo"
+        nt["DV-06"]["notes"] = [{"at": "2026-01-01T00:01:00Z", "by": "human", "text": "Sent back: tests fail"}]
+        nt["DV-07"]["notes"] = [{"at": "2026-01-01T00:01:00Z", "by": "human", "text": "Changes requested: smaller"}]
+        new["tasks"] = [t for t in new["tasks"] if t["id"] != "DV-01"]
+        events = {(kind, tid): text for kind, tid, _, text in kanvas.human_events(old, new)}
+        self.assertEqual(events, {
+            ("approved", "DV-04"): None, ("answer", "DV-02"): "OpenMeteo", ("accepted", "DV-05"): None,
+            ("sent_back", "DV-06"): "tests fail", ("changes", "DV-07"): "smaller", ("deleted", "DV-01"): None})
+
+    def test_start_and_yolo_clicks(self):
+        old = self.board()
+        new = json.loads(json.dumps(old))
+        nt = {t["id"]: t for t in new["tasks"]}
+        nt["DV-02"].update(state="doing", started={"at": "2026-01-01T00:00:00Z", "by": "human"},
+                           notes=[{"at": "2026-01-01T00:00:00Z", "by": "human", "text": "Started in the board."}])
+        nt["DV-03"].update(state="done", notes=[{"at": "2026-01-01T00:00:00Z", "by": "human", "text": "Looks good"}])
+        self.assertEqual(kanvas.human_events(old, new), [("start", "DV-02", "Task DV-02", None), ("moved", "DV-03", "Task DV-03", "todo -> done")],
+                         "one notice per click: the notes saved with a move are part of it")
+        old["tasks"].append(task("DV-05", "proposed", "DV", ["DV-03"]))
+        new = json.loads(json.dumps(old))
+        nt = {t["id"]: t for t in new["tasks"]}
+        nt["DV-05"].update(state="todo", yolo=True)
+        nt["DV-04"]["state"] = "todo"
+        kinds = sorted((e[0], e[1]) for e in kanvas.human_events(old, new))
+        self.assertEqual(kinds, [("approved", "DV-04"), ("yolo_on", "DV-05")],
+                         "the YOLO request stands for the proposals it approves; others are still announced")
+
+    def test_plan_lists_what_comes_first(self):
+        board = self.board()
+        board["tasks"].append(task("DV-05", "review", "DV"))
+        self.task_in(board, "DV-03")["deps"].append("DV-05")
+        lines = kanvas.plan_lines(board, "DV-03")
+        self.assertEqual([line.split(":")[0] for line in lines], ["- DV-02 Task DV-02", "- DV-05 Task DV-05", "- DV-03 Task DV-03"])
+        self.assertIn("ready to start", lines[0])
+        self.assertIn("waits for the human's review", lines[1])
+        self.assertIn("waits for DV-02, DV-05", lines[2])
+
+    def test_a_save_from_the_browser_tells_the_agent(self):
+        self.save_from_browser(lambda b: self.task_in(b, "DV-04").update(state="todo"))
+        [waiting] = kanvas.deliveries(self.path)
+        self.assertEqual((waiting["kind"], waiting["session"]), ("approved", None), "it waits for a session to connect")
+        ch = self.channel()
+        self.save_from_browser(lambda b: self.task_in(b, "DV-02").update(yolo=True))
+        self.run_cli("note", "DV-02", "agents tell nobody", "--as", "claude")
+        d = kanvas.deliveries(self.path)[0]
+        self.assertEqual((d["kind"], d["task"], d["session"]), ("yolo_on", "DV-02", ch.id))
+        ch.deliver_pending()
+        first, note = self.sent(ch)
+        self.assertIn("on DV-04 (Task DV-04), the human approved it.", first["params"]["content"])
+        self.assertIn("on DV-02 (Task DV-02), the human turned on YOLO.", note["params"]["content"])
+        self.assertEqual(note["params"]["meta"]["kind"], "yolo_on")
+        self.assertEqual(len(kanvas.deliveries(self.path)), 2)
+        self.assertEqual(ch.ack(d["id"])[:12], "Acknowledged")
+        self.assertNotIn("Other tasks you heard about", first["params"]["content"])
+        self.assertIn("Other tasks you heard about", note["params"]["content"])
+        self.assertIn("- DV-04 Task DV-04: todo", note["params"]["content"], "what the human did meanwhile")
+
+    def test_an_undone_click_is_not_delivered(self):
+        ch = self.channel()
+        self.save_from_browser(lambda b: self.task_in(b, "DV-04").update(state="todo"))
+        self.save_from_browser(lambda b: self.task_in(b, "DV-04").update(state="proposed"))
+        ch.deliver_pending()
+        statuses = {d["kind"]: (d["status"], d["error"]) for d in kanvas.deliveries(self.path)}
+        self.assertEqual(statuses["approved"], ("failed", "the human changed it again before it reached the agent"))
+        self.assertEqual(statuses["moved"][0], "delivered")
+
+    def test_notices_go_to_the_session_that_has_the_task(self):
+        first, second = self.channel(), self.channel()
+        d, _ = kanvas.work_request(self.path, "DV-02", second.id)
+        second.deliver_pending()
+        self.assertEqual(kanvas.route_session(self.path, "DV-02")["id"], second.id)
+        self.assertEqual(kanvas.route_session(self.path, "DV-03")["id"], first.id)
+
+    def test_protocol_version_and_errors(self):
+        ch = self.channel()
+        late = ch.answer({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2026-07-28"}})
+        self.assertEqual(late["result"]["protocolVersion"], kanvas.MCP_VERSIONS[-1])
+        self.assertEqual(ch.answer({"jsonrpc": "2.0", "id": 2, "method": "nope"})["error"]["code"], -32601)
+        self.assertEqual(ch.answer({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "rm"}})["error"]["code"], -32602)
+        self.assertIsNone(ch.answer({"jsonrpc": "2.0", "method": "notifications/cancelled"}))
+
+
+class FakeCodex:
+    """A stand-in for the Codex app server: a WebSocket that answers the calls the bridge makes and records the turns."""
+
+    def __init__(self, cwd, threads=("t-1",), status="idle"):
+        self.cwd, self.threads, self.status = cwd, list(threads), status
+        self.inputs, self.active = [], None
+        self.listener = socket.socket()
+        self.listener.bind(("127.0.0.1", 0))
+        self.listener.listen()
+        self.url = f"ws://127.0.0.1:{self.listener.getsockname()[1]}"
+        self.conn = None
+        threading.Thread(target=self.serve, daemon=True).start()
+
+    def close(self):
+        for s in (self.conn, self.listener):
+            try:
+                s and s.close()
+            except OSError:
+                pass
+
+    def send(self, obj):
+        data = json.dumps(obj).encode()
+        n = len(data)
+        head = bytes([0x81, n]) if n < 126 else bytes([0x81, 126]) + n.to_bytes(2, "big")
+        self.conn.sendall(head + data)
+
+    def frames(self, f):
+        while True:
+            b0, b1 = f.read(2)
+            n = b1 & 0x7F
+            if n == 126:
+                n = int.from_bytes(f.read(2), "big")
+            key = f.read(4)
+            yield json.loads(bytes(b ^ key[i % 4] for i, b in enumerate(f.read(n))))
+
+    def serve(self):
+        self.conn, _ = self.listener.accept()
+        f = self.conn.makefile("rb")
+        head = list(iter(f.readline, b"\r\n"))
+        key = next(l for l in head if l.lower().startswith(b"sec-websocket-key")).split(b":")[1].strip()
+        accept = base64.b64encode(hashlib.sha1(key + b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11").digest()).decode()
+        self.conn.sendall(f"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\n\r\n".encode())
+        try:
+            for m in self.frames(f):
+                method, p = m.get("method"), m.get("params") or {}
+                if "id" not in m:
+                    continue
+                if method == "thread/loaded/list":
+                    result = {"data": self.threads}
+                elif method == "thread/read":
+                    result = {"thread": {"id": p["threadId"], "cwd": self.cwd}}
+                elif method == "thread/resume":
+                    result = {"thread": {"id": p["threadId"], "status": {"type": self.status}}}
+                elif method == "turn/start":
+                    self.inputs.append(("start", p["input"][0]["text"]))
+                    result = {"turn": {"id": "turn-new"}}
+                elif method == "turn/steer":
+                    if p.get("expectedTurnId") != self.active:
+                        self.send({"id": m["id"], "error": {"code": -32600, "message": "no such active turn"}})
+                        continue
+                    self.inputs.append(("steer", p["input"][0]["text"]))
+                    result = {"turnId": self.active}
+                else:
+                    result = {}
+                self.send({"id": m["id"], "result": result})
+        except (ValueError, OSError):
+            pass
+
+    def turn(self, tid, started=True):
+        self.active = tid if started else None
+        self.send({"method": "turn/started" if started else "turn/completed", "params": {"threadId": self.threads[0], "turn": {"id": tid}}})
+
+
+class CodexBridgeTests(TempBoard):
+    """`kanvas codex`, against a fake Codex app server."""
+
+    def setUp(self):
+        super().setUp()
+        self.addCleanup(shutil.rmtree, kanvas.agents_dir(self.path), True)
+
+    def bridge(self, codex, **kw):
+        self.addCleanup(codex.close)
+        b = kanvas.CodexBridge(self.path, "Codex test", codex.url, poll=0.05, **kw)
+        threading.Thread(target=b.run, daemon=True).start()
+        self.addCleanup(b.closed.set)
+        deadline = time.monotonic() + 5
+        while not b.ready.is_set() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        self.assertTrue(b.ready.is_set(), "the bridge found no conversation")
+        return b
+
+    def wait(self, what, check):
+        deadline = time.monotonic() + 5
+        while not check():
+            if time.monotonic() > deadline:
+                self.fail(f"Waited for {what}")
+            time.sleep(0.02)
+
+    def test_a_notice_becomes_a_turn_in_the_codex_conversation_of_this_project(self):
+        codex = FakeCodex(self.dir)
+        b = self.bridge(codex)
+        self.assertEqual(b.thread, "t-1")
+        d, _ = kanvas.work_request(self.path, "DV-02", b.id)
+        self.wait("the turn", lambda: codex.inputs)
+        kind, text = codex.inputs[0]
+        self.assertEqual(kind, "start")
+        self.assertIn(f"[Kanvas board notice {d['id']}]", text)
+        self.assertIn(f"ack {d['id']}`", text)
+        self.wait("delivered", lambda: kanvas.deliveries(self.path)[0]["status"] == "delivered")
+        self.assertIn("Acknowledged", self.run_cli("ack", d["id"])[1])
+
+    def test_a_notice_joins_the_turn_codex_is_working_on(self):
+        codex = FakeCodex(self.dir)
+        b = self.bridge(codex)
+        codex.turn("turn-7")
+        self.wait("the bridge to see the turn", lambda: b.turn == "turn-7")
+        kanvas.work_request(self.path, "DV-02", b.id)
+        self.wait("the steer", lambda: codex.inputs)
+        self.assertEqual(codex.inputs[0][0], "steer")
+
+    def test_codex_busy_on_an_unknown_turn_gets_the_notice_when_it_ends(self):
+        codex = FakeCodex(self.dir, status="active")
+        b = self.bridge(codex)
+        kanvas.work_request(self.path, "DV-02", b.id)
+        time.sleep(0.3)
+        self.assertEqual((codex.inputs, kanvas.deliveries(self.path)[0]["status"]), ([], "pending"))
+        codex.turn("turn-1", started=False)
+        self.wait("the turn after the busy one", lambda: codex.inputs)
+        self.assertEqual(codex.inputs[0][0], "start")
+
+    def test_several_conversations_in_the_project_need_a_choice(self):
+        codex = FakeCodex(self.dir, threads=("t-1", "t-2"))
+        self.addCleanup(codex.close)
+        b = kanvas.CodexBridge(self.path, "Codex test", codex.url)
+        with self.assertRaisesRegex(kanvas.KanvasError, "Several Codex conversations.*--thread"):
+            b.run()
+        b.closed.set()
+
+    def test_conversations_of_other_projects_are_not_picked(self):
+        codex = FakeCodex(tempfile.mkdtemp())
+        self.addCleanup(codex.close)
+        b = kanvas.CodexBridge(self.path, "Codex test", codex.url)
+        b.ws = kanvas.WebSocket(codex.url)
+        threading.Thread(target=b.reader, daemon=True).start()
+        self.assertIsNone(b.find_thread())
+        b.ws.close()
 
 
 class RememberTests(TempBoard):
