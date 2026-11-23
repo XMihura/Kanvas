@@ -147,7 +147,7 @@ Each task in progress shows who started it. A task you start in the board shows 
 - **Questions from agents.** When an agent needs your answer to go on, it runs `ask` and asks in its chat. Its card turns from Doing to **Waiting for you** and shows the question, a toast announces it, the bell lists it above the work to review, across every open board, and the browser tab's title counts the agents waiting, as in `(1) My project · Kanvas`. You reply in the agent's chat, and the card goes back to Doing with the agent's next note. If that chat is gone, Dismiss in the task panel clears the question.
 - **Right-click menus.** On a card: state actions, YOLO, a new task that depends on it or blocks it, adding and removing dependencies, copying the ID, deleting. On an arrow (left or right click): the two tasks it connects are highlighted and shown in the menu; click either one to open it, or remove the connection. On empty space: a new task in that group, a new group, or deleting that group (its tasks stay without a group unless you choose to delete them too).
 - **Undo and redo.** Ctrl+Z undoes your last change in the browser, Ctrl+Shift+Z or Ctrl+Y redoes it, and the arrows next to New task do the same. On a Mac, these and the page's other Ctrl shortcuts use ⌘, as the page shows. The toast that confirms a change has an Undo button for that change. Changes agents made in the meantime are kept: an undo only touches what your change touched, and refuses if an agent has changed that since. Inside a text field, Ctrl+Z undoes typing as usual.
-- **YOLO.** "YOLO up to here…" on a card (right-click menu or task panel) hands that task and everything it depends on to the agents: the tasks they finish on the way are done without review. The YOLO task itself comes back to you for review, so a YOLO run ends with one review of the result, and YOLO stops applying once that task is in review. YOLO on a task further along takes over the chain: the YOLO marks inside it go, so only the last task comes back for review. Turning it on approves the chain's current proposals and marks the other tasks waiting for review as done. A proposal an agent links into the chain later waits for your approval; one you link yourself is approved with the link. The task carries a YOLO tag and the tasks it covers a lightning icon; the same menu turns it off. To make agents stop before a task, choose "YOLO before this…", or right-click any task of a YOLO chain and switch it from **Do it too** to **Stop before**: agents finish everything it depends on and wait for you, and the card shows a STOP tag inside a dashed ring. Switching back lets the agents do it too.
+- **YOLO.** "YOLO up to here…" on a card (right-click menu or task panel) hands that task and everything it depends on to the agents: the tasks they finish on the way are done without review. The YOLO task itself comes back to you for review, so a YOLO run ends with one review of the result, and YOLO stops applying once that task is in review. YOLO on a task further along takes over the chain: the YOLO marks inside it go, so only the last task comes back for review. YOLO never approves: approve the chain's proposals first, since the board refuses YOLO while the chain holds any, and turning it on marks the other tasks waiting for review as done. A proposal linked into the chain later, by you or an agent, waits for your approval. The task carries a YOLO tag and the tasks it covers a lightning icon; the same menu turns it off. To make agents stop before a task, choose "YOLO before this…", or right-click any task of a YOLO chain and switch it from **Do it too** to **Stop before**: agents finish everything it depends on and wait for you, and the card shows a STOP tag inside a dashed ring. Switching back lets the agents do it too.
 - **Everything else.** Filter by state, search (press `/`), hide finished work, groups with their own ID prefixes (from the menu on the board name), light, dark or system theme, keyboard shortcuts (press `?`), arrow keys to move from card to card and Enter to move into its panel (Tab goes round the panel, Escape comes back out), and links: `#TR-02` in the URL opens that task.
 
 ![The board view in dark mode](img/board-dark.png)
@@ -159,6 +159,56 @@ There are three ways to open it:
 | `kanvas serve` | Any browser, live two-way sync. Concurrent changes from agents and the browser merge automatically. |
 | Open `kanvas.html` directly | The project has a copy in `.agents/skills/kanvas/`. In Chrome or Edge, choose your `kanvas.json` and the page reads and writes it in place, with live updates. Other browsers edit a copy in the tab; **Save** downloads it. |
 | `kanvas export` | A single self-contained, read-only HTML snapshot to share or attach to a pull request. |
+
+## Send tasks to an agent session
+
+Work in the board and let the agent know without copying anything into its chat. With a Claude Code session connected to the board, every click of yours reaches it: approving a proposal, **Start**, **YOLO up to here**, accepting or sending back its work, asking for changes, notes and answers to its questions. Each notice says what to do and, from the dependencies, what has to come first, so the agent tells you when a click needs another step before it. Ready tasks also get **Send to <session>**. The session confirms each notice, and the task panel and a toast show where it stands: told, received, or why it was not delivered. A notice that you undo before it arrives is dropped. Nothing changes in the workflow: the agent still starts tasks with `kanvas start`, which refuses proposals and blocked tasks, and its finished work waits for your review without a notice.
+
+This uses Claude Code [channels](https://code.claude.com/docs/en/channels), a research preview. Add Kanvas to the project's `.mcp.json`:
+
+```json
+{ "mcpServers": { "kanvas": { "command": "kanvas", "args": ["channel"] } } }
+```
+
+and start Claude Code in the project with the channel enabled:
+
+```bash
+claude --dangerously-load-development-channels server:kanvas
+```
+
+While that session runs, **Send to Claude Code · <folder>** appears next to `work on ID` on ready tasks. `--label NAME` after `channel` names the session in the board.
+
+- **Approve is not Start.** Approving a task only makes it available: the agent hears about it and checks it for missing dependencies, but starts nothing. Work starts only with **Start**, **Send to** or **YOLO**. Accepting a review or reopening a task does not start anything either. With several sessions, the approval's notice goes to the one that has the task, else the one with the least unfinished work in hand, after a 15-second pause: send the task to a session with **Send to** in that time and only that session hears about it.
+- Notices that ask for work list the tasks in progress and who started them. An agent whose work would change the same files asks you in the board (**Waiting for you**) which goes first, instead of waiting silently on the others.
+- Notices about a task go to the session of the agent that worked on it, or for what happens to a proposal (changes asked, rejected), the agent that proposed it. A bridge started with `--as NAME` says which agent it is; otherwise Kanvas learns it from the task the agent took after a notice reached that session. **Start** waits 15 seconds like an approval, so **Start** then **Send to** reaches only the session you chose, and it is dropped if an agent has already taken the task over.
+- On a board an agent session has connected to, work you start is for an agent: the card says **Waiting for agent** (with who was told and whether it is busy) until an agent takes it over, and **Start** is refused while no agent session is connected, since nobody would work on the task.
+- **Start with a new agent.** Start Kanvas with `kanvas serve --agent-command CMD` (or `$KANVAS_AGENT_COMMAND`), a shell command that starts a new agent session, and ready tasks get **Start with a new agent**. Kanvas runs the command with `KANVAS_TASK`, `KANVAS_BOARD`, `KANVAS_AGENT` (the name to connect as, e.g. `kanvas opencode --as "$KANVAS_AGENT"`), `KANVAS_STATE_DIR`, `KANVAS_PYTHON` and `KANVAS_SCRIPT` in its environment, and the task's request waits for that agent: no other session takes it. Only this computer can start agents, never a phone, and the command's output goes to a log in Kanvas's state folder.
+- When a YOLO chain's next task becomes ready because someone else finished what it waited for (another agent, or you accepting a review), the session running the chain is told to go on. YOLO never approves and covers only the chain you put under YOLO.
+- A notice that is no longer needed when the agent is free to read it (you clicked again, someone started the task) shows in grey as not sent, with the reason, not as a failure.
+- Notices come from boards served by `kanvas serve`, from this computer and from your phone over Tailscale alike. A `kanvas.html` opened directly from disk tells no agent.
+- On a board an agent session has connected to before, clicks made while none is connected wait for the first one that connects. Boards that never had one keep no notices. Each notice is written before the board is saved and goes out only once the board shows the change, so a crash in between neither loses it nor sends a change that was not kept. A notice the agent never confirmed may come again after a crash: the agent checks the board before acting on it.
+- A task in progress with nothing happening on it for a day says so in its panel and in the notices, since its agent may be gone: pause it, then start it or send it to an agent.
+- A notice that arrives while Claude is in the middle of its work is shown to it as a message from outside the conversation. Claude sees it but, as a safety measure, may ask you in its chat before acting on it, and leaves it unconfirmed; the panel says so.
+- Agents without the channel's tool confirm a notice with `kanvas ack DELIVERY_ID`.
+
+**Codex** works the same way through its app server (experimental in Codex). Run the app server, open Codex on it in the project, and connect the board:
+
+```bash
+codex app-server --listen ws://127.0.0.1:4545          # leave it running
+codex --remote ws://127.0.0.1:4545                    # in the project: your Codex conversation
+kanvas codex --server ws://127.0.0.1:4545             # in the project: tells that conversation about your clicks
+```
+
+**OpenCode** works through the OpenCode server that its interface already uses. With OpenCode open in the project:
+
+```bash
+kanvas opencode                                       # in the folder the OpenCode session works in
+```
+
+`kanvas opencode` finds the session working in that folder (with several, pick one with `--session ID`; `--directory DIR` names another folder) and hands it the notices when the agent is free: everything that came while it worked goes as one message, written from the board as it is then, so the agent spends one turn on it and never acts on a state that has passed. Your notes, answers and pauses do not wait: they go into the turn the agent is working on (OpenCode's steer), since they may change what it does right now. The agent confirms with `kanvas ack`.
+
+`kanvas codex` finds the Codex conversation open in the project (with several, pick one with `--thread ID`). Notices wait while Codex works; once it is idle, all of them start one new turn, written from the board as it is then. The agent confirms it with `kanvas ack`.
+- Sessions and notices are kept in your user folder, not in the project, and notices are deleted after a week.
 
 ## On your phone
 
