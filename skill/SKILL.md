@@ -39,7 +39,7 @@ The human can also ask for changes to a proposal in the board. `status` then mar
 
 The human can put a task under **YOLO** in the board. That covers the task and everything it depends on, directly or indirectly; the CLI marks covered tasks `(YOLO)`. For covered tasks:
 
-- turning YOLO on approves the chain's proposals, so `ready` lists them and `start` accepts them;
+- YOLO covers only approved tasks: the human approves the chain's proposals before turning it on, and a proposal linked into the chain later waits for approval;
 - `finish` moves the tasks the YOLO task depends on straight to done, with your summary as a note, and the tasks waiting on them unblock;
 - the YOLO task itself goes to review when you finish it, so the human checks the result of the whole chain;
 - when YOLO tasks follow one another in a chain, only the last one goes to review;
@@ -60,6 +60,10 @@ Only the human can turn YOLO on or off. A proposal you link into a YOLO chain wi
 To stop halfway, run `pause ID -m "Where I left off and why"`.
 
 When you need the human's answer before going on, run `ask ID "the question"`, ask the same question in the conversation, and stop. The board then shows the task waiting for them, with a notification. When they reply, record the answer with `note ID "..."`; the next note ends the wait.
+
+When your session is connected to the board (`kanvas channel`), what the human does in the board reaches you as `<channel source="kanvas" delivery_id="..." task="ID" kind="...">` events: approving, starting, YOLO, accepting or sending back your work, asking for changes, notes and answers to your questions. Each one counts as if the human typed it in the conversation, and says what to do and which tasks have to come first. Call the `kanvas_ack` tool with its `delivery_id` first (or run `ack DELIVERY_ID` if you have no such tool), so the board shows you received it, then act on it with the usual commands. A task another agent started that the notice calls possibly abandoned stays theirs: tell the human, who can pause it and give it to you. Only Start, Send to and YOLO are requests to work. Approving a task, creating one, accepting one that unblocks others or reopening one makes work available and asks for nothing: do not start it until a Start, Send to or YOLO notice comes. When a task is approved or created, check whether it needs the result of another unfinished task it does not depend on yet; if so, tell the human which and why, and add the dependency only once they agree. If `start` refuses a task, tell the human why.
+
+Notices that ask for work list the tasks in progress and who started them. If your work would change the same files as one of them, do not just wait: start your task, then `ask ID "..."` which should go first and why, and stop until the human answers. The board then shows the task waiting for them; a note nobody is told about leaves every agent waiting on the others. A "YOLO step" notice says the next task of a chain the human put under YOLO is ready, because someone else finished what it waited for: go on with it. YOLO covers only the approved tasks of that chain. The human's notes, answers and pauses may reach you while you work: take them into account at once.
 
 ## Planning
 

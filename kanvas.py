@@ -515,9 +515,9 @@ def yolo_cover(board):
 
     A human sets `yolo` on a task; until that task goes to review, it covers
     itself and everything it transitively depends on, and finishing a covered
-    task marks it done without review. Setting YOLO approves the chain's
-    proposals (yoloOn in kanvas.html); a proposal linked into the chain later
-    stays a proposal until a human approves it.
+    task marks it done without review. YOLO never approves: the human approves
+    the chain's proposals first (kanvas.html refuses YOLO over proposals), and a
+    proposal linked into the chain later stays a proposal until approved.
     Only the last YOLO task of a chain goes to review: a YOLO task that another
     one depends on is covered by it like the rest of the chain.
     A task with `yolo_before` covers what it depends on in the same way, and no
@@ -1074,12 +1074,12 @@ def cmd_status(args):
     yolo = [t["id"] for t in board["tasks"] if cover.get(t["id"].upper()) == t["id"]]
     if yolo:
         names = ", ".join(yolo)
-        print(f"YOLO on {names}: tasks marked (YOLO) need no approval and finishing them marks them done; "
+        print(f"YOLO on {names}: tasks marked (YOLO) need no review: finishing them marks them done; "
               f"{names} {'itself goes' if len(yolo) == 1 else 'themselves go'} to review.")
     stops = [t["id"] for t in board["tasks"] if yolo_stop(t) and t["state"] != "doing" and unfinished_before(tasks, t)]
     if stops:
         names = ", ".join(stops)
-        print(f"YOLO before {names}: tasks marked (YOLO) need no approval and finishing them marks them done; "
+        print(f"YOLO before {names}: tasks marked (YOLO) need no review: finishing them marks them done; "
               f"YOLO stops before {names}, so stop there and tell the human.")
     sections = (
         ("doing", "Doing"),
@@ -1245,8 +1245,15 @@ def cmd_finish(args):
                    and t["id"].upper() in _upstream(tasks, s) and not unfinished_before(tasks, s)]
         return t, via, yolo_stop(tasks[via.upper()]) if via else False, reached
 
+    old = load_board(path)
     t, via, before, reached = mutate(path, op)
     if t["state"] == "done":
+        # Finishing a YOLO step may make the next one ready for the session running that chain, which may not be
+        # this agent's: tell it, as the board does when the human's click makes a step ready.
+        try:
+            notify_yolo_steps(path, old, load_board(path))
+        except (KanvasError, OSError):
+            pass
         print(f"Finished {t['id']} (doing -> done). YOLO covers it {'before' if before else 'through'} {via}, so it skips review.")
         if reached:
             names, one = ", ".join(reached), len(reached) == 1
@@ -2126,12 +2133,1321 @@ def state_file():
     return os.path.join(base, "boards.json")
 
 
+# ---------------------------------------------------------------------------
+# Agent sessions: the board sends work requests to a chat that is already open
+# ---------------------------------------------------------------------------
+#
+# `kanvas channel` runs inside an agent's session (a Claude Code channel, which is an MCP server on stdio). It
+# registers the session for its board and heartbeats. When the human clicks "Send to <session>" on a ready task, the
+# server checks the task and writes a delivery addressed to that session. The channel checks the task again,
+# pushes the request into the chat and marks it delivered; the agent confirms with the kanvas_ack tool. Sessions and
+# deliveries live in the user's state folder, outside the project, one folder per board.
+# Sending only asks for work: the agent still starts the task with `kanvas start`, which keeps every workflow rule.
+
+SESSION_BEAT = 2.0      # seconds between a channel's heartbeats
+SESSION_LIVE = 10.0     # a session without a heartbeat for this long is gone
+DELIVERY_KEEP = 20      # deliveries the board shows, newest first
+DELIVERY_ID_RE = re.compile(r"^d-[0-9a-f]{12}$")
+SESSION_ID_RE = re.compile(r"^s-[0-9a-f]{12}$")
+# "staged": written under the board's lock before the board itself, and made "pending" once the board is saved, so a
+# crash in between leaves a notice the channel can check against the board instead of losing it.
+# "dropped": not sent because the board changed before the agent was free to read it (the human clicked again, or
+# someone started the task): out of date, not a failure.
+DELIVERY_STATES = ("staged", "pending", "delivered", "acked", "failed", "dropped")
+STAGED_GRACE = 10.0             # a notice still staged after this long outlived a crash: check it against the board
+# Approving or starting a task often comes just before sending it to one agent session: the notice to the default
+# session waits this long, and is dropped if the task is sent to a session meanwhile, so only that session gets it.
+HOLD_KINDS = ("approved", "created", "start")
+HOLD = 15.0
+KEEP_DELIVERIES = 7 * 86400     # notices older than this are deleted
+KEEP_SESSIONS = 86400           # so are sessions that stopped this long ago without closing
+IDLE_AFTER = 86400              # a task in progress with no activity for this long may be abandoned
+
+
+def agents_dir(board_path):
+    """The folder with the sessions and deliveries of the board at `board_path`."""
+    identity = os.path.normcase(os.path.realpath(board_path))
+    digest = hashlib.sha1(identity.encode("utf-8")).hexdigest()[:16]
+    return os.path.join(os.path.dirname(state_file()), "agents", digest)
+
+
+def _read_json_file(path):
+    try:
+        data = json.loads(read_text_file(path))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _write_json_file(path, data):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    write_text_atomic(path, json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+
+
+def _records(folder, id_re):
+    out = []
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return out
+    for name in names:
+        if name.endswith(".json") and id_re.match(name[:-5]):
+            rec = _read_json_file(os.path.join(folder, name))
+            if rec and rec.get("id") == name[:-5]:
+                out.append(rec)
+    return out
+
+
+def live_sessions(board_path, now=None):
+    """The sessions of the board that sent a heartbeat recently, oldest first."""
+    now = time.time() if now is None else now
+    sessions = _records(os.path.join(agents_dir(board_path), "sessions"), SESSION_ID_RE)
+    live = [s for s in sessions if isinstance(s.get("beat"), (int, float)) and now - s["beat"] <= SESSION_LIVE]
+    return sorted(live, key=lambda s: (s.get("since") or 0, s["id"]))
+
+
+def find_session(board_path, sid):
+    return next((s for s in live_sessions(board_path) if s["id"] == sid), None)
+
+
+def _utc_seconds(at):
+    try:
+        return datetime.strptime(str(at), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).timestamp()
+    except ValueError:
+        return None
+
+
+def session_agents(board_path, board, sessions=None, ds=None):
+    """Map agent name (as in `--as`) -> live session, so a notice about a task reaches the agent that worked on it.
+    A session says its name when its bridge has one (`--as` or $KANVAS_AGENT); otherwise the board shows it: the
+    agent that started a task after a request for it reached that session, the latest such request before the start."""
+    sessions = live_sessions(board_path) if sessions is None else sessions
+    ids = {s["id"]: s for s in sessions}
+    out = {}
+    ds = deliveries(board_path) if ds is None else ds
+    for t in board["tasks"] if board else []:
+        started = t.get("started") if isinstance(t.get("started"), dict) else {}
+        by, at = started_by(t), _utc_seconds(started.get("at"))
+        if not by or by == "human" or by in out or at is None:
+            continue
+        reached = [d for d in ds if str(d.get("task", "")).upper() == t["id"].upper() and d.get("status") == "acked"
+                   and d.get("kind") in WORK_KINDS and d.get("session") in ids and (d.get("updated") or 0) <= at + 1]
+        if reached:
+            out[by] = ids[max(reached, key=lambda d: d.get("updated") or 0)["session"]]
+    for s in sessions:  # a name the session gave wins over a guess
+        if s.get("agent"):
+            out[s["agent"]] = s
+    return out
+
+
+def task_agent(task, kind=None):
+    """The agent a notice about `task` concerns: who proposed it, for what happens to a proposal; else who worked on
+    it. None when that is the human or nobody."""
+    if not task:
+        return None
+    proposer = task.get("by") if task.get("by") not in (None, "", "human") else None
+    by = started_by(task)
+    worker = by if by and by != "human" else None
+    if kind in ("rejected", "changes", "approved") or task.get("state") == "proposed":
+        return proposer or worker
+    return worker or (proposer if kind in ("edited", "note", "deleted") else None)
+
+
+def delivery_path(board_path, did):
+    return os.path.join(agents_dir(board_path), "deliveries", did + ".json")
+
+
+def deliveries(board_path):
+    """The board's deliveries, newest first."""
+    out = _records(os.path.join(agents_dir(board_path), "deliveries"), DELIVERY_ID_RE)
+    return sorted(out, key=lambda d: (d.get("created") or 0, d["id"]), reverse=True)
+
+
+def sendable(task, tasks):
+    """Why the human cannot send `task` to an agent now, or None. Only approved tasks with their dependencies done
+    can be sent, and tasks the human started in the board, which the agent takes over: approving comes first."""
+    vs = view_state(task, tasks)
+    if vs == "todo" or (vs == "doing" and started_by(task) == "human"):
+        return None
+    if vs == "blocked":
+        return f"{task['id']} is blocked by unfinished {', '.join(unmet_deps(task, tasks))}"
+    if vs == "proposed":
+        return f"{task['id']} is a proposal: approve it first"
+    by = started_by(task) if vs == "doing" else None
+    return f"{task['id']} cannot be sent: it is {vs}" + (f" (started by {by})" if by else "")
+
+
+def work_request(board_path, task_ref, sid):
+    """Create a delivery asking session `sid` to work on a task; return (delivery, created). A request for the
+    same task and session that has not been confirmed yet is returned again instead of sent twice."""
+    with SEND_LOCK:
+        return _work_request(board_path, task_ref, sid)
+
+
+SEND_LOCK = threading.Lock()
+
+
+def _work_request(board_path, task_ref, sid):
+    session = find_session(board_path, sid)
+    if not session:
+        raise KanvasError("That agent session is not connected to this board any more")
+    board = load_board(board_path)
+    tasks = task_map(board)
+    task = find_task(board, task_ref)
+    why = sendable(task, tasks)
+    if why:
+        raise KanvasError(why)
+    for d in deliveries(board_path):
+        if d.get("session") == sid and d.get("task", "").upper() == task["id"].upper() and d.get("status") in ("pending", "delivered"):
+            return d, False
+    return record_delivery(board_path, session, "work", task["id"], task["title"]), True
+
+
+def launch_agent(board_path, task_ref, command):
+    """Start a new agent for a task with the human's `--agent-command`, and leave the task's request waiting for it:
+    the first session that connects as that agent gets it. The command gets the task, the board, the agent's name and
+    Kanvas's state folder in its environment (never in its text), and runs on its own; its output goes to a log next
+    to the board's notices. Returns (delivery, agent)."""
+    board = load_board(board_path)
+    tasks = task_map(board)
+    task = find_task(board, task_ref)
+    why = sendable(task, tasks)
+    if why:
+        raise KanvasError(why)
+    agent = f"agent-{task['id'].lower()}-{os.urandom(2).hex()}"
+    d = record_delivery(board_path, None, "work", task["id"], task["title"], agent=agent)
+    folder = os.path.join(agents_dir(board_path), "launches")
+    os.makedirs(folder, exist_ok=True)
+    env = dict(os.environ, KANVAS_BOARD=os.path.abspath(board_path), KANVAS_TASK=task["id"], KANVAS_AGENT=agent,
+               KANVAS_STATE_DIR=os.path.dirname(state_file()), KANVAS_PYTHON=sys.executable,
+               KANVAS_SCRIPT=os.path.abspath(__file__))
+    try:
+        with open(os.path.join(folder, agent + ".log"), "ab") as log:
+            subprocess.Popen(command, shell=True, env=env, cwd=os.path.dirname(os.path.abspath(board_path)),
+                             stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+                             start_new_session=os.name != "nt")
+    except OSError as e:
+        with locked(delivery_path(board_path, d["id"])):
+            d.update(status="failed", error=f"the agent command did not start: {e}", updated=time.time())
+            _write_json_file(delivery_path(board_path, d["id"]), d)
+        raise KanvasError(f"The agent command did not start: {e}")
+    return d, agent
+
+
+def agents_info(board_path):
+    """What the board shows about agents: the live sessions, and the latest deliveries with whether their
+    session is still there."""
+    sessions = live_sessions(board_path)
+    ids = {s["id"] for s in sessions}
+    out = []
+    for d in deliveries(board_path)[:DELIVERY_KEEP]:
+        d = dict(d)
+        if d.get("status") == "staged":
+            d["status"] = "pending"
+        d["online"] = d.get("session") in ids
+        out.append(d)
+    # "used": an agent session connected to this board at some time, so the board works with agents: work the human
+    # starts there is for an agent to do, and waits for one.
+    return {"sessions": [{"id": s["id"], "label": s.get("label") or s["id"], "tool": s.get("tool") or "agent"} for s in sessions],
+            "deliveries": out, "used": os.path.isdir(os.path.join(agents_dir(board_path), "sessions"))}
+
+
+def route_session(board_path, task_id, board=None, agent=None):
+    """The session that should hear about a task: the one of the agent that worked on it (`agent`), else the live one
+    the last delivery for it reached, else the one with the least work in hand (on a tie, the one told least
+    recently). None when no agent session is connected."""
+    sessions = live_sessions(board_path)
+    if not sessions:
+        return None
+    ids = {s["id"]: s for s in sessions}
+    ds = deliveries(board_path)
+    if agent:
+        s = session_agents(board_path, board, sessions, ds).get(agent)
+        if s:
+            return s
+    for d in ds:
+        if (str(d.get("task", "")).upper() == str(task_id).upper() and d.get("session") in ids
+                and d.get("status") in ("delivered", "acked")):
+            return ids[d["session"]]
+    told = {}
+    for d in ds:
+        told.setdefault(d.get("session"), d.get("created") or 0)
+    return min(sessions, key=lambda s: (session_load(ds, s["id"], board), told.get(s["id"], 0), sessions.index(s)))
+
+
+LOAD_KINDS = ("work", "start", "approved", "yolo_on", "yolo_before", "yolo_ready", "sent_back", "reopened")
+
+
+def session_load(ds, sid, board=None):
+    """The unfinished tasks whose work a session was last asked for: the work it has in hand. A YOLO chain counts as
+    the work it covers, a task YOLO stops before included."""
+    tasks = task_map(board) if board else {}
+    owner = {}
+    for d in reversed(ds):  # oldest first, so the latest request for a task wins
+        if d.get("kind") in LOAD_KINDS and d.get("status") not in ("failed", "dropped"):
+            owner[str(d.get("task", "")).upper()] = d.get("session")
+    if board:
+        cover = yolo_cover(board)
+        for tid, s in list(owner.items()):
+            t = tasks.get(tid)
+            if t and (t.get("yolo") or t.get("yolo_before")):
+                for k, head in cover.items():
+                    if head.upper() == tid:
+                        owner.setdefault(k, s)
+    return sum(1 for tid, s in owner.items() if s == sid and (tasks.get(tid) or {}).get("state") != "done")
+
+
+def prune_agents(board_path, now=None):
+    """Delete old notices and the files of sessions that ended without closing."""
+    now = time.time() if now is None else now
+    folder = agents_dir(board_path)
+    for d in deliveries(board_path):
+        if now - (d.get("created") or now) > KEEP_DELIVERIES:
+            try:
+                os.remove(delivery_path(board_path, d["id"]))
+            except OSError:
+                pass
+    for s in _records(os.path.join(folder, "sessions"), SESSION_ID_RE):
+        if now - (s.get("beat") or 0) > KEEP_SESSIONS:
+            try:
+                os.remove(os.path.join(folder, "sessions", s["id"] + ".json"))
+            except OSError:
+                pass
+
+
+def record_delivery(board_path, session, kind, task, title, text=None, status="pending", agent=None):
+    """A notice for `session`, or with session None for the first agent session that connects to the board (with
+    `agent`, the first one working as that agent: a new agent Kanvas launched for the task)."""
+    now = time.time()
+    did = "d-" + os.urandom(6).hex()
+    d = {"id": did, "kind": kind, "task": task, "title": title, "session": session["id"] if session else None,
+         "label": (session.get("label") or session["id"]) if session else agent, "text": text, "created": now,
+         "updated": now, "status": status, "error": None}
+    if agent:
+        d["agent"] = agent
+    _write_json_file(delivery_path(board_path, did), d)
+    return d
+
+
+# What the human did in the board, found by comparing the board before and after a save from the browser. Every
+# button is covered this way, without wiring each one. Agents change the board through the CLI, which tells nobody.
+EVENT_LABELS = {
+    "work": "work on it", "start": "started it", "approved": "approved it", "accepted": "accepted it",
+    "sent_back": "sent it back", "changes": "asked for changes", "rejected": "rejected it", "deleted": "deleted it",
+    "answer": "answered the question", "note": "added a note", "paused": "paused it", "reopened": "reopened it",
+    "moved": "moved it", "created": "created it", "edited": "edited it", "yolo_on": "turned on YOLO",
+    "yolo_before": "made YOLO stop before it", "yolo_off": "turned off YOLO",
+    "yolo_ready": "has it under YOLO, and it is ready now",
+}
+
+
+def _new_human_notes(old, new):
+    before = len(old.get("notes") or [])
+    return [n for n in (new.get("notes") or [])[before:] if n.get("by") == "human"]
+
+
+STARTED_NOTE = "Started in the board."
+
+
+def human_events(old_board, new_board):
+    """[(kind, task, title, text)] for what the human changed between two versions of the board."""
+    old, new = task_map(old_board), task_map(new_board)
+    events = []
+    for k, t in new.items():
+        o = old.get(k)
+        if o is None:
+            events.append(("created", t["id"], t["title"], None))
+            continue
+        notes = _new_human_notes(o, t)
+        texts = [str(n.get("text", "")) for n in notes]
+        sent_back = next((x for x in texts if x.startswith("Sent back:")), None)
+        changes = next((x for x in texts if x.startswith(CHANGES)), None)
+        a, b = o.get("state"), t.get("state")
+        first = len(events)
+        if a != b:
+            if a == "proposed" and b == "todo":
+                events.append(("approved", t["id"], t["title"], None))
+            elif b == "doing" and started_by(t) == "human":
+                events.append(("start", t["id"], t["title"], None))
+            elif a == "review" and b == "done":
+                events.append(("accepted", t["id"], t["title"], None))
+            elif a == "review" and b == "todo" and sent_back:
+                events.append(("sent_back", t["id"], t["title"], sent_back[len("Sent back:"):].strip()))
+            elif a == "doing" and b == "todo":
+                events.append(("paused", t["id"], t["title"], None))
+            elif a == "done" and b == "todo":
+                events.append(("reopened", t["id"], t["title"], None))
+            else:
+                events.append(("moved", t["id"], t["title"], f"{a} -> {b}"))
+        if bool(o.get("yolo")) != bool(t.get("yolo")) or bool(o.get("yolo_before")) != bool(t.get("yolo_before")):
+            kind = "yolo_before" if t.get("yolo_before") else "yolo_on" if t.get("yolo") else "yolo_off"
+            events.append((kind, t["id"], t["title"], None))
+        if a != b:
+            # Notes saved with a move (Mark done with a comment, the board's own "Started in the board.") belong
+            # to the move: one notice per click.
+            extra = "\n".join(x for x in texts if x is not sent_back and x is not changes and x != STARTED_NOTE)
+            if extra and len(events) > first:
+                kind, tid, title, text = events[first]
+                events[first] = (kind, tid, title, f"{text}\n{extra}" if text and kind != "moved" else extra if kind != "moved" else text)
+            texts = [x for x in texts if x is changes]
+        for x in texts:
+            if x is sent_back:
+                continue
+            if x is changes:
+                events.append(("changes", t["id"], t["title"], change_text({"text": x})))
+            elif open_question(o) and x is texts[0]:
+                events.append(("answer", t["id"], t["title"], x))
+            else:
+                events.append(("note", t["id"], t["title"], x))
+        for n_old, n_new in zip(o.get("notes") or [], t.get("notes") or []):
+            if n_new.get("by") == "human" and n_old.get("text") != n_new.get("text") and n_old.get("at") == n_new.get("at"):
+                events.append(("note", t["id"], t["title"], f"(edited an earlier note) {n_new.get('text', '')}"))
+        if a == b and any(o.get(f) != t.get(f) for f in ("title", "desc", "deps", "group")):
+            events.append(("edited", t["id"], t["title"], None))
+    for k, o in old.items():
+        if k not in new:
+            events.append(("rejected" if o.get("state") == "proposed" else "deleted", o["id"], o["title"], None))
+    # Turning YOLO on approves the chain's proposals and marks its reviews done: the YOLO request covers them, one
+    # notice instead of many.
+    yolo = {tid.upper() for kind, tid, _, _ in events if kind == "yolo_on"}
+    if yolo:
+        cover = yolo_cover(new_board)
+        events = [e for e in events if not (e[0] in ("approved", "accepted", "moved") and cover.get(e[1].upper(), "").upper() in yolo)]
+    return events
+
+
+def notify_human_changes(board_path, old_board, new_board, status="pending"):
+    """Tell the connected agent session about each human change; return the deliveries made."""
+    # A board no agent session ever connected to keeps no notices: Kanvas without agents writes nothing more.
+    if not os.path.isdir(os.path.join(agents_dir(board_path), "sessions")):
+        return []
+    prune_agents(board_path)
+    out = []
+    old, new = task_map(old_board), task_map(new_board)
+    events = human_events(old_board, new_board)
+    for kind, task, title, text in events:
+        t = new.get(task.upper()) or old.get(task.upper())
+        # With no session connected, the notice waits for the first one that connects.
+        session = route_session(board_path, task, new_board, task_agent(t, kind))
+        out.append(record_delivery(board_path, session, kind, task, title, text, status))
+    yolo = {tid.upper() for kind, tid, _, _ in events if kind in ("yolo_on", "yolo_before")}
+    out += notify_yolo_steps(board_path, old_board, new_board, status, skip=yolo)
+    return out
+
+
+def yolo_steps(old_board, new_board):
+    """[(task, YOLO task)] for the tasks under YOLO that became ready to start between two versions of the board:
+    the next steps of chains the human put under YOLO."""
+    old, new = task_map(old_board), task_map(new_board)
+    cover = yolo_cover(new_board)
+    out = []
+    for k, head in cover.items():
+        t, o = new.get(k), old.get(k)
+        if t and view_state(t, new) == "todo" and (o is None or view_state(o, old) != "todo"):
+            out.append((t, new[head.upper()]))
+    return out
+
+
+def yolo_owner(board_path, head, board):
+    """The session running the YOLO chain of `head`: the one its YOLO notice reached, else the usual routing."""
+    ids = {s["id"]: s for s in live_sessions(board_path)}
+    for d in deliveries(board_path):
+        if (str(d.get("task", "")).upper() == head["id"].upper() and d.get("kind") in ("yolo_on", "yolo_before")
+                and d.get("status") in ("delivered", "acked") and d.get("session") in ids):
+            return ids[d["session"]]
+    return route_session(board_path, head["id"], board, task_agent(head))
+
+
+def notify_yolo_steps(board_path, old_board, new_board, status="pending", skip=()):
+    """Tell the session running a YOLO chain that its next step is ready, whoever made it ready (another agent's
+    work, the human accepting a review): otherwise the chain stalls. YOLO only goes on with the chain the human put
+    under YOLO; it never approves anything."""
+    if not os.path.isdir(os.path.join(agents_dir(board_path), "sessions")):
+        return []
+    out = []
+    for t, head in yolo_steps(old_board, new_board):
+        if head["id"].upper() in skip:
+            continue  # the YOLO notice the human's click sent already covers the chain
+        session = yolo_owner(board_path, head, new_board)
+        out.append(record_delivery(board_path, session, "yolo_ready", t["id"], t["title"], head["id"], status))
+    return out
+
+
+def release_staged(board_path, staged, keep=True):
+    """After the board was saved (keep) or not (drop), settle the notices staged for the change."""
+    for d in staged:
+        path = delivery_path(board_path, d["id"])
+        try:
+            if keep:
+                with locked(path):
+                    cur = _read_json_file(path)
+                    if cur and cur.get("status") == "staged":
+                        cur["status"], cur["updated"] = "pending", time.time()
+                        _write_json_file(path, cur)
+            else:
+                os.remove(path)
+        except (KanvasError, OSError):
+            pass
+
+
+def ack_delivery(board_path, did, session=None):
+    """Mark a delivered notice as received by the agent; `session` limits it to notices sent to that session."""
+    if not isinstance(did, str) or not DELIVERY_ID_RE.match(did):
+        raise KanvasError(f"Unknown delivery_id {did!r}")
+    path = delivery_path(board_path, did)
+    with locked(path):
+        d = _read_json_file(path)
+        if not d or (session and d.get("session") != session):
+            raise KanvasError(f"Delivery {did} was not sent to this session" if d else f"Unknown delivery_id {did}")
+        if d.get("status") == "acked":
+            return f"{did} was already acknowledged"
+        if d.get("status") != "delivered":
+            raise KanvasError(f"Delivery {did} is {d.get('status')}, not waiting for an acknowledgement")
+        d["status"], d["error"], d["updated"] = "acked", None, time.time()
+        _write_json_file(path, d)
+    return f"Acknowledged {did}: the board shows that you received the notice about {d['task']}"
+
+
+def cmd_ack(args):
+    path, bad = board_path(args), []
+    for did in args.delivery_id:
+        try:
+            print(ack_delivery(path, did))
+        except KanvasError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            bad.append(did)
+    return 1 if bad else 0
+
+
+def idle_days(task, now=None):
+    """Whole days since anything happened on a task in progress, when that is at least IDLE_AFTER, else None."""
+    if task.get("state") != "doing":
+        return None
+    times = [n.get("at") for n in task.get("notes") or []]
+    started = task.get("started")
+    if isinstance(started, dict):
+        times.append(started.get("at"))
+    last = None
+    for at in times:
+        try:
+            t = datetime.strptime(str(at), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).timestamp()
+        except ValueError:
+            continue
+        last = t if last is None else max(last, t)
+    now = time.time() if now is None else now
+    if last is None or now - last < IDLE_AFTER:
+        return None
+    return int((now - last) // 86400)
+
+
+def doing_text(task):
+    by = started_by(task)
+    days = idle_days(task)
+    text = f"in progress{f' by {by}' if by else ''}"
+    if days is not None:
+        text += (f", nothing happened on it for {days} day{'s' if days != 1 else ''}: it may be abandoned. "
+                 "Do not take it over yourself; tell the human, who can pause it and send it to you")
+    return text
+
+
+def _order(tasks, ids):
+    """`ids` (upper case) in the order they can be done: dependencies first."""
+    deps = {k: [d.upper() for d in tasks[k].get("deps", []) if d.upper() in ids] for k in ids if k in tasks}
+    depth = chain_depths(deps)
+    return sorted(deps, key=lambda k: (depth.get(k, 0), k))
+
+
+def plan_lines(board, task_id):
+    """What has to happen before `task_id`, in order, from the dependencies: the order the code enforces."""
+    tasks = task_map(board)
+    t = tasks.get(str(task_id).upper())
+    if t is None:
+        return []
+    cover = yolo_cover(board)
+    lines = []
+    todo = {k for k in _upstream(tasks, t) | {t["id"].upper()} if k in tasks and tasks[k].get("state") != "done"}
+    for k in _order(tasks, todo):
+        x = tasks[k]
+        vs = view_state(x, tasks)
+        if vs == "done":
+            continue
+        by = started_by(x)
+        what = {
+            "proposed": "needs the human's approval",
+            "todo": "ready to start" + (" (YOLO: no review needed)" if k in cover and k != t["id"].upper() else ""),
+            "blocked": "waits for " + ", ".join(unmet_deps(x, tasks)),
+            "doing": doing_text(x),
+            "review": "waits for the human's review",
+        }[vs]
+        lines.append(f"- {x['id']} {x['title']}: {what}")
+    return lines
+
+
+# Approving (or accepting what unblocks a task) makes work available; it never asks for it. Work starts only when the
+# human clicks Start, Send to or YOLO, which reach the agent as their own notices.
+NOT_YET = ("Do not start it: work starts only when the human clicks Start or Send to for a task, or puts it under YOLO, "
+           "and you get a notice saying so.")
+
+# The board knows only the dependencies someone declared. The agent, which sees the code, checks for the others when
+# a task is approved or created, and proposes them to the human instead of adding them itself.
+DEPENDENCY_CHECK = ("Do check now whether it needs the result of another unfinished task on the board that it does not "
+                    "depend on yet. If it does, tell the human which task and why, and add the dependency "
+                    "(`kanvas depend ID ON`) only once they agree.")
+
+
+WORK_KINDS = ("work", "start", "approved", "accepted", "yolo_on", "yolo_ready", "sent_back", "reopened")
+
+# The human's words for a task (a note, an answer, a pause): they may change what the agent is doing right now, so a
+# bridge that can hand them over while the agent works does so. Requests for work wait until it is free.
+URGENT_KINDS = ("note", "answer", "paused", "deleted", "yolo_off", "changes")
+
+# Agents that see their work clash with other work in progress ask the human in the board, which then shows the task
+# waiting for them, instead of stopping with a note nobody is told about.
+ASK_IF_CLASH = ("if your work would change the same files, do not just wait: start your task and ask the human which "
+                "goes first with `kanvas ask ID \"...\"` (the board shows it waiting for them), then stop until they answer")
+
+
+def event_message(d, board, known=(), ack=None):
+    """The text the agent reads for a delivery, from the board as it is now. `known` are other tasks the session
+    heard about before: their state now goes along, since the human may have moved them while it was not told."""
+    ack = ack or f"call kanvas_ack with delivery_id \"{d['id']}\""
+    context = board_context(board, known, {str(d["task"]).upper()}, d.get("kind") in WORK_KINDS)
+    return f"{event_body(d, board)}{context}\nFirst {ack}."
+
+
+def batch_message(ds, board, known=(), ack=None):
+    """One message for several notices to the same session, oldest first, written from the board as it is when the
+    agent is free to read it: one turn for the agent instead of one per notice, and nothing in it out of date."""
+    if len(ds) == 1:
+        return event_message(ds[0], board, known, ack)
+    ack = ack or "call kanvas_ack with each delivery_id"
+    items = "\n\n".join(f"{i}. [{d['id']}] {event_body(d, board)}" for i, d in enumerate(ds, 1))
+    tids = {str(d["task"]).upper() for d in ds}
+    context = board_context(board, known, tids, any(d.get("kind") in WORK_KINDS for d in ds))
+    return (f"Kanvas: {len(ds)} notices from the board while you were busy, oldest first. They describe the board as it "
+            f"is now: read them all, then act on them together.\n\n{items}\n{context}\nFirst {ack}.")
+
+
+def board_context(board, known, skip, work):
+    """The state now of the other tasks the session heard about, and, for notices that ask for work, who is working
+    on what."""
+    tasks = task_map(board)
+    now = []
+    for k in known:
+        x = tasks.get(str(k).upper())
+        if x and x["id"].upper() not in skip:
+            vs = view_state(x, tasks)
+            now.append(f"- {x['id']} {x['title']}: {doing_text(x) if vs == 'doing' else vs}")
+    out = ("\nOther tasks you heard about, as the board has them now (the board wins over what you remember):\n"
+           + "\n".join(now)) if now else ""
+    # Agents working side by side cannot see each other: say who works on what, so changes to the same files do not
+    # collide unseen.
+    if work:
+        doing = [x for x in board["tasks"] if x.get("state") == "doing" and x["id"].upper() not in skip]
+        busy = [f"- {x['id']} {x['title']}" + (f" (started by {started_by(x)})" if started_by(x) else "")
+                for x in doing if started_by(x) != "human"]
+        # A task the human started in the board that no agent took over yet is not work in progress: nobody changes
+        # its files, so it is no reason to wait.
+        waiting = [f"- {x['id']} {x['title']}" for x in doing if started_by(x) == "human"]
+        if busy:
+            out += (f"\nIn progress right now, by you or other agents; {ASK_IF_CLASH}:\n" + "\n".join(busy))
+        if waiting:
+            out += ("\nStarted in the board but no agent works on them yet (nobody is changing their files):\n"
+                    + "\n".join(waiting))
+    return out
+
+
+def event_body(d, board):
+    """What one notice says: who did what to which task, and what that asks of the agent."""
+    tid, title, text, kind = d["task"], d.get("title") or "", d.get("text"), d.get("kind")
+    tasks = task_map(board)
+    t = tasks.get(str(tid).upper())
+    plan = plan_lines(board, tid) if t else []
+    order = ("\nWhat it needs, in order (dependencies first):\n" + "\n".join(plan)) if len(plan) > 1 else ""
+    ready_after = []
+    if t:
+        # Tasks under YOLO that it unblocks get their own notice, to the session running the chain.
+        cover = yolo_cover(board)
+        ready_after = [x["id"] for x in board["tasks"] if any(dep.upper() == t["id"].upper() for dep in x.get("deps", []))
+                       and view_state(x, tasks) == "todo" and x["id"].upper() not in cover]
+    quote_ = f"\n\n> " + "\n> ".join(str(text).splitlines()) if text else ""
+    head = (f"Kanvas: the human asks you to work on {tid} ({title})." if kind == "work"
+            else f"Kanvas: {tid} ({title}) is ready, and it is part of the YOLO chain of {text}." if kind == "yolo_ready"
+            else f"Kanvas: on {tid} ({title}), the human {EVENT_LABELS.get(kind, kind)}.")
+    if kind == "yolo_ready":
+        quote_ = ""
+    do = {
+        "work": f"They ask you to work on it: `kanvas show {tid}`, then `kanvas start {tid}`.",
+        "start": f"They clicked Start, which means: work on it. `kanvas start {tid}` takes it over from them.",
+        "approved": f"It is approved: available for work, not a request to work. {NOT_YET} {DEPENDENCY_CHECK}",
+        "accepted": "It is done: the human reviewed and accepted your work. "
+                    + (f"Approved tasks it was holding back are now ready: {', '.join(ready_after)}. {NOT_YET}"
+                       if ready_after else "Nothing else was waiting on it."),
+        "sent_back": f"Address their feedback: `kanvas show {tid}`, `kanvas start {tid}`, fix it, then `kanvas finish {tid}`.",
+        "changes": f"Revise the proposal as they ask, with `kanvas edit {tid}`, and add a note on what you changed.",
+        "rejected": "The proposal was removed. Do not propose it again unless the human asks.",
+        "deleted": "The task was removed from the board. Stop any work on it.",
+        "answer": "This answers the question you asked. Record it if useful and carry on.",
+        "note": "Take it into account if you work on this task.",
+        "paused": "Stop working on it now and leave it as it is.",
+        "reopened": f"It is back in to do: it needs more work, and the notes say what. {NOT_YET}",
+        "moved": f"Its state changed ({text}). Check `kanvas show {tid}` before doing anything more on it.",
+        "created": f"A new task. Look at it with `kanvas show {tid}`. {NOT_YET} {DEPENDENCY_CHECK}",
+        "edited": f"Its title, description or dependencies changed: re-read it with `kanvas show {tid}`.",
+        "yolo_on": "Work through the chain without asking: every task it depends on, dependencies first, then this one, "
+                   "which goes to review. Tasks that wait for the human (approval or review) stay with them: skip them and say so.",
+        "yolo_ready": f"The human put {text} under YOLO, and what {tid} needed is done now: go on with the chain, "
+                      f"`kanvas start {tid}`. YOLO covers only the approved tasks of that chain.",
+        "yolo_before": "Finish what it depends on, then stop before it and wait for the human.",
+        "yolo_off": "YOLO is off: finish your current step, then ask before starting more tasks of this chain.",
+    }.get(kind, "")
+    if kind in ("moved",):
+        quote_ = ""
+    return f"{head}{quote_}\n{do}{order}"
+
+
+def superseded(board_path, d, board):
+    """Why an approval, Start or new-task notice no longer concerns this session, or None: the human sent the task to
+    a session after the click, or someone started it (for a Start: an agent took it over)."""
+    if d.get("kind") not in HOLD_KINDS:
+        return None
+    for x in deliveries(board_path):
+        if (x.get("kind") == "work" and str(x.get("task", "")).upper() == str(d.get("task", "")).upper()
+                and (x.get("created") or 0) >= (d.get("created") or 0) and x.get("session") != d.get("session")):
+            return f"the human sent {d['task']} to {x.get('label') or 'another session'}"
+    t = task_map(board).get(str(d.get("task", "")).upper())
+    by = started_by(t) if t and t.get("state") == "doing" else None
+    if by and not (d.get("kind") == "start" and by == "human"):
+        return f"{t['id']} was started by {by}"
+    return None
+
+
+def event_current(d, board):
+    """Why a delivery is out of date and must not reach the agent, or None. The board may have changed (undo,
+    another click) between the save and the delivery."""
+    tasks = task_map(board)
+    kind, t = d.get("kind"), tasks.get(str(d.get("task", "")).upper())
+    if kind in ("rejected", "deleted"):
+        return None if t is None else "it is back on the board"
+    if t is None:
+        return f"{d.get('task')} is no longer on the board"
+    if kind in ("work", "start"):
+        if kind == "work" and t["title"] != d.get("title"):
+            return f"{t['id']} changed since it was sent (now \"{t['title']}\")"
+        return sendable(t, tasks)
+    if kind == "yolo_ready":
+        head = yolo_cover(board).get(t["id"].upper())
+        if view_state(t, tasks) != "todo":
+            return f"{t['id']} is {view_state(t, tasks)} now"
+        if not head:
+            return f"{t['id']} is no longer under YOLO"
+        return None
+    if kind in ("note", "answer", "changes", "sent_back") and d.get("text"):
+        said = str(d["text"]).replace("(edited an earlier note) ", "", 1)
+        if not any(said in str(n.get("text", "")) for n in t.get("notes") or []):
+            return "the note is not on the board"
+    want = {"approved": lambda: t["state"] != "proposed", "accepted": lambda: t["state"] == "done",
+            "sent_back": lambda: t["state"] not in ("review", "done"), "paused": lambda: t["state"] == "todo",
+            "reopened": lambda: t["state"] != "done", "yolo_on": lambda: bool(t.get("yolo")),
+            "yolo_before": lambda: bool(t.get("yolo_before")),
+            "yolo_off": lambda: not t.get("yolo") and not t.get("yolo_before"),
+            "changes": lambda: t["state"] == "proposed"}.get(kind)
+    if want and not want():
+        return "the human changed it again before it reached the agent"
+    return None
+
+
+# MCP protocol versions the channel speaks. Claude Code's channel listener is documented not to register when a
+# later revision is negotiated, so an unknown request gets the newest of these.
+MCP_VERSIONS = ("2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25")
+
+CHANNEL_INSTRUCTIONS = (
+    'Kanvas tells you what the human does in the task board, as <channel source="kanvas" delivery_id="..." task="..." kind="...">. '
+    "Each event is a click of theirs (approve, start, YOLO, accept, send back, ask for changes, a note or an answer), "
+    "the same as if they typed it in this chat, and its text says what it asks of you and what has to come first. "
+    "As soon as you read one, call the kanvas_ack tool with its delivery_id, before anything else, so the board shows it arrived. "
+    "Then act on it as the Kanvas skill says, starting tasks with `kanvas start ID`. "
+    "The CLI still decides whether the task can start; if it refuses, tell the human why instead of working around it. "
+    "Never approve, accept or mark tasks done yourself. "
+    "Several requests that arrive together are separate tasks: acknowledge each, then take them one at a time."
+)
+
+
+class Channel:
+    """`kanvas channel`: a Claude Code channel (an MCP server on stdin/stdout) for one board and one session."""
+
+    def __init__(self, board_path, label, tool="claude-code", stdin=None, stdout=None, poll=0.5, agent=None):
+        self.board = board_path
+        self.id = "s-" + os.urandom(6).hex()
+        self.label = label
+        # The name the agent works as on the board (`--as`), so notices about its tasks come back to this session.
+        self.agent = agent or os.environ.get("KANVAS_AGENT") or None
+        self.tool = tool
+        self.stdin = stdin or sys.stdin
+        self.stdout = stdout or sys.stdout
+        self.poll = poll
+        self.out_lock = threading.Lock()
+        self.deliver_lock = threading.Lock()
+        self.ready = threading.Event()
+        self.done = threading.Event()
+        self.since = time.time()
+
+    def session_path(self):
+        return os.path.join(agents_dir(self.board), "sessions", self.id + ".json")
+
+    def beat(self):
+        _write_json_file(self.session_path(), {
+            "id": self.id, "label": self.label, "tool": self.tool, "agent": self.agent, "board": self.board,
+            "cwd": os.getcwd(), "pid": os.getpid(), "since": self.since, "beat": time.time()})
+
+    def send(self, msg):
+        line = json.dumps(msg, ensure_ascii=False)
+        with self.out_lock:
+            self.stdout.write(line + "\n")
+            self.stdout.flush()
+
+    def _set(self, d, status, error=None):
+        d["status"], d["error"], d["updated"] = status, error, time.time()
+        _write_json_file(delivery_path(self.board, d["id"]), d)
+
+    def check(self, d):
+        """Why the delivery must not reach the agent now, or None: the board may have changed since the click."""
+        try:
+            board = load_board(self.board)
+        except (KanvasError, OSError) as e:
+            return f"cannot read the board: {e}", None
+        return event_current(d, board) or superseded(self.board, d, board), board
+
+    @staticmethod
+    def due(d, now=None):
+        """Whether a notice can go out: pending, or staged so long ago that the save that staged it is over."""
+        now = time.time() if now is None else now
+        age = now - (d.get("created") or now)
+        if d.get("kind") in HOLD_KINDS and age < HOLD:
+            return False
+        return d.get("status") == "pending" or (d.get("status") == "staged" and age > STAGED_GRACE)
+
+    def claim_waiting(self):
+        """Take the notices made while no agent session was connected. The lock keeps two sessions from both
+        taking one."""
+        for d in deliveries(self.board):
+            # A request for a new agent Kanvas launched waits for that agent, not for any session.
+            if d.get("session") is None and self.due(d) and d.get("agent") in (None, self.agent):
+                path = delivery_path(self.board, d["id"])
+                with locked(path):
+                    d = _read_json_file(path)
+                    if d and d.get("session") is None and self.due(d) and d.get("agent") in (None, self.agent):
+                        d["session"], d["label"] = self.id, self.label
+                        _write_json_file(path, d)
+
+    # Bridges to agents that take one message per turn (Codex, OpenCode) wait until the agent is free and hand over
+    # every notice due as one message, written then: one turn instead of one per notice, and nothing stale in it.
+    batch = False
+    # A bridge that can put a message into the agent's current turn (OpenCode) hands over the human's words for a
+    # task (URGENT_KINDS) at once, even while the agent works; the rest still waits.
+    steer = False
+
+    def idle(self):
+        """Whether the agent can take a message now."""
+        return True
+
+    def deliver_pending(self):
+        with self.deliver_lock:
+            self.claim_waiting()
+            mine = [d for d in deliveries(self.board) if d.get("session") == self.id and self.due(d)]
+            if not mine:
+                return
+            busy = self.batch and not self.idle()
+            if busy:
+                mine = [d for d in mine if self.steer and d.get("kind") in URGENT_KINDS]
+                if not mine:
+                    return
+            valid, board = [], None
+            for d in reversed(mine):  # oldest first
+                why, board = self.check(d)
+                if why:
+                    self._set(d, "dropped", why)
+                else:
+                    valid.append(d)
+            if not valid:
+                return
+            if self.batch:
+                if self.push_batch(valid, board, self.known(), steer=busy):
+                    for d in valid:
+                        self._set(d, "delivered")
+                return
+            for d in valid:
+                if self.push(d, board, self.known()):
+                    self._set(d, "delivered")
+
+    def known(self):
+        """Every task an agent of this board was told about: a resumed conversation remembers what an earlier session
+        of it heard."""
+        out = []
+        for x in deliveries(self.board):
+            if x.get("status") in ("delivered", "acked") and x["task"] not in out and len(out) < 12:
+                out.append(x["task"])
+        return out
+
+    def push_batch(self, ds, board, known, steer=False):
+        return all(self.push(d, board, known) for d in ds)
+
+    def push(self, d, board, known):
+        """Put the notice into the session; False leaves it pending for the next round."""
+        self.send({"jsonrpc": "2.0", "method": "notifications/claude/channel", "params": {
+            "content": event_message(d, board, known),
+            "meta": {"delivery_id": d["id"], "task": d["task"], "kind": d.get("kind", "work"),
+                     "board": board_name(self.board)}}})
+        return True
+
+    def ack(self, did):
+        with self.deliver_lock:
+            return ack_delivery(self.board, did, self.id)
+
+    def fail_pending(self, why):
+        with self.deliver_lock:
+            for d in deliveries(self.board):
+                if d.get("session") == self.id and d.get("status") == "pending":
+                    self._set(d, "failed", why)
+
+    def loop(self):
+        last = 0.0
+        while not self.done.wait(self.poll):
+            try:
+                if time.time() - last >= SESSION_BEAT:
+                    self.beat()
+                    last = time.time()
+                if self.ready.is_set():
+                    self.deliver_pending()
+            except (KanvasError, OSError) as e:
+                print(f"kanvas channel: {e}", file=sys.stderr, flush=True)
+
+    def tools(self):
+        return [{
+            "name": "kanvas_ack",
+            "description": "Confirm to the Kanvas board that you received a request it sent to this session. "
+                           "Call it with the delivery_id of each <channel source=\"kanvas\"> event as soon as you read it.",
+            "inputSchema": {"type": "object", "properties": {"delivery_id": {"type": "string"}},
+                            "required": ["delivery_id"]},
+        }]
+
+    def answer(self, msg):
+        """The reply to one JSON-RPC message, or None for notifications."""
+        method, mid, params = msg.get("method"), msg.get("id"), msg.get("params") or {}
+        if mid is None:
+            if method == "notifications/initialized":
+                self.ready.set()
+            return None
+        if method == "initialize":
+            asked = params.get("protocolVersion")
+            version = asked if asked in MCP_VERSIONS else MCP_VERSIONS[-1]
+            result = {"protocolVersion": version,
+                      "capabilities": {"experimental": {"claude/channel": {}}, "tools": {}},
+                      "serverInfo": {"name": "kanvas", "version": VERSION},
+                      "instructions": CHANNEL_INSTRUCTIONS}
+        elif method == "ping":
+            result = {}
+        elif method == "tools/list":
+            result = {"tools": self.tools()}
+        elif method == "tools/call":
+            if params.get("name") != "kanvas_ack":
+                return {"jsonrpc": "2.0", "id": mid, "error": {"code": -32602, "message": f"Unknown tool {params.get('name')}"}}
+            try:
+                text, bad = self.ack((params.get("arguments") or {}).get("delivery_id")), False
+            except (KanvasError, OSError) as e:
+                text, bad = str(e), True
+            result = {"content": [{"type": "text", "text": text}], "isError": bad}
+        else:
+            return {"jsonrpc": "2.0", "id": mid, "error": {"code": -32601, "message": f"Method not found: {method}"}}
+        return {"jsonrpc": "2.0", "id": mid, "result": result}
+
+    def run(self):
+        prune_agents(self.board)
+        self.beat()
+        worker = threading.Thread(target=self.loop, daemon=True)
+        worker.start()
+        try:
+            for line in self.stdin:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    msg = json.loads(line)
+                except ValueError:
+                    self.send({"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Parse error"}})
+                    continue
+                for m in msg if isinstance(msg, list) else [msg]:
+                    reply = self.answer(m) if isinstance(m, dict) else None
+                    if reply:
+                        self.send(reply)
+        finally:
+            self.done.set()
+            worker.join(timeout=2)
+            self.fail_pending("the agent session closed before the request reached it")
+            try:
+                os.remove(self.session_path())
+            except OSError:
+                pass
+
+
+def cmd_channel(args):
+    path = board_path(args)
+    folder = os.path.basename(os.path.dirname(path))
+    label = args.label or os.environ.get("KANVAS_AGENT") or f"Claude Code · {folder}"
+    if sys.stdin.isatty():
+        print("kanvas channel talks to Claude Code over stdin/stdout. Add it to the project's .mcp.json and start\n"
+              "Claude Code with: claude --dangerously-load-development-channels server:kanvas", file=sys.stderr)
+    try:
+        sys.stdin.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
+    # Text on stdout would break the protocol: everything else goes to stderr.
+    Channel(path, label, agent=getattr(args, "as_name", None)).run()
+
+
+class WebSocket:
+    """A small WebSocket client for a local server: text frames of JSON, as the Codex app server speaks."""
+
+    def __init__(self, url, timeout=10):
+        parts = urlparse(url)
+        if parts.scheme != "ws" or not parts.hostname:
+            raise KanvasError(f"Expected a ws://host:port address, not {url}")
+        self.sock = socket.create_connection((parts.hostname, parts.port or 80), timeout=timeout)
+        self.buf = b""
+        self.lock = threading.Lock()
+        key = base64.b64encode(os.urandom(16)).decode("ascii")
+        self.sock.sendall((f"GET {parts.path or '/'} HTTP/1.1\r\nHost: {parts.netloc}\r\nUpgrade: websocket\r\n"
+                           f"Connection: Upgrade\r\nSec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n").encode("ascii"))
+        while b"\r\n\r\n" not in self.buf:
+            self._recv()
+        head, _, self.buf = self.buf.partition(b"\r\n\r\n")
+        status = head.split(b"\r\n")[0].decode("latin-1")
+        if status.split(" ")[1:2] != ["101"]:
+            raise KanvasError(f"{url} did not accept a WebSocket: {status}")
+        self.sock.settimeout(None)
+
+    def _recv(self):
+        chunk = self.sock.recv(65536)
+        if not chunk:
+            raise EOFError("the server closed the connection")
+        self.buf += chunk
+
+    def _take(self, n):
+        while len(self.buf) < n:
+            self._recv()
+        out, self.buf = self.buf[:n], self.buf[n:]
+        return out
+
+    def _frame(self, op, payload):
+        n, key = len(payload), os.urandom(4)
+        size = bytes([0x80 | n]) if n < 126 else bytes([0x80 | 126]) + n.to_bytes(2, "big") if n < 65536 \
+            else bytes([0x80 | 127]) + n.to_bytes(8, "big")
+        with self.lock:
+            self.sock.sendall(bytes([0x80 | op]) + size + key + bytes(b ^ key[i % 4] for i, b in enumerate(payload)))
+
+    def send(self, obj):
+        self._frame(1, json.dumps(obj, ensure_ascii=False).encode("utf-8"))
+
+    def recv(self):
+        """The next JSON message; answers pings, and raises EOFError when the server closes."""
+        data = b""
+        while True:
+            b0, b1 = self._take(2)
+            n = b1 & 0x7F
+            if n == 126:
+                n = int.from_bytes(self._take(2), "big")
+            elif n == 127:
+                n = int.from_bytes(self._take(8), "big")
+            mask = self._take(4) if b1 & 0x80 else None
+            payload = self._take(n)
+            if mask:
+                payload = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+            op = b0 & 0x0F
+            if op == 8:
+                raise EOFError("the server closed the connection")
+            if op == 9:
+                self._frame(10, payload)
+                continue
+            if op == 10:
+                continue
+            data += payload
+            if b0 & 0x80:
+                return json.loads(data.decode("utf-8"))
+
+    def close(self):
+        try:
+            self.sock.close()
+        except OSError:
+            pass
+
+
+def ack_command(board_path, did):
+    """`did`: one delivery ID or a list of them."""
+    did = " ".join(did) if isinstance(did, (list, tuple)) else did
+    """The command an agent without the channel's tool runs to confirm a notice: the same Kanvas, board and state
+    folder as this bridge, since the agent's shell may run in another folder or with another Kanvas installed."""
+    state = os.environ.get("KANVAS_STATE_DIR")
+    prefix = f'KANVAS_STATE_DIR="{state}" ' if state else ""
+    rest = f'--board "{board_path}" ack {did}'
+    if INSTALLED:
+        return prefix + command_line(rest)
+    # This interpreter by its full path: `python` is not on every PATH (macOS has only python3).
+    script = os.path.abspath(__file__)
+    return prefix + f'"{sys.executable}" "{script}" {rest}'
+
+
+
+class CodexBridge(Channel):
+    """`kanvas codex`: tells a Codex conversation about the board, through the Codex app server that the Codex
+    interface also uses (`codex app-server --listen ws://...` and `codex --remote ws://...`). Notices wait while Codex
+    works; once it is idle, all of them start one new turn, written from the board as it is then."""
+
+    batch = True
+
+    def __init__(self, board_path, label, url, thread=None, poll=0.5, agent=None):
+        super().__init__(board_path, label, tool="codex", poll=poll, agent=agent)
+        self.url, self.thread = url, thread
+        self.ws = None
+        self.calls, self.answers, self.next_id = {}, {}, 1
+        self.calls_lock = threading.Lock()
+        self.turn = None        # the turn Codex is working on, when known
+        self.busy = False       # Codex is working, on a turn this bridge may not know yet
+        self.closed = threading.Event()
+
+    def request(self, method, params=None, timeout=30):
+        with self.calls_lock:
+            mid, self.next_id = self.next_id, self.next_id + 1
+            done = self.calls[mid] = threading.Event()
+        self.ws.send({"jsonrpc": "2.0", "id": mid, "method": method, "params": params or {}})
+        if not done.wait(timeout) or self.closed.is_set() and mid not in self.answers:
+            raise KanvasError(f"Codex did not answer {method}")
+        msg = self.answers.pop(mid)
+        if "error" in msg:
+            raise KanvasError(f"Codex refused {method}: {msg['error'].get('message', msg['error'])}")
+        return msg.get("result") or {}
+
+    def reader(self):
+        try:
+            while True:
+                msg = self.ws.recv()
+                if "id" in msg and ("result" in msg or "error" in msg):
+                    with self.calls_lock:
+                        done = self.calls.pop(msg["id"], None)
+                    if done:
+                        self.answers[msg["id"]] = msg
+                        done.set()
+                    continue
+                if "id" in msg and "method" in msg:
+                    # Approvals and other questions are for the person at the Codex interface, not the board.
+                    continue
+                p = msg.get("params") or {}
+                if p.get("threadId") != self.thread:
+                    continue
+                if msg.get("method") == "turn/started":
+                    self.turn, self.busy = (p.get("turn") or {}).get("id"), True
+                elif msg.get("method") == "turn/completed":
+                    self.turn, self.busy = None, False
+                elif msg.get("method") == "thread/status/changed":
+                    self.busy = (p.get("status") or {}).get("type") == "active"
+                    if not self.busy:
+                        self.turn = None
+        except (EOFError, OSError, ValueError) as e:
+            print(f"kanvas codex: lost the Codex app server: {e}", file=sys.stderr, flush=True)
+        finally:
+            self.closed.set()
+            with self.calls_lock:
+                for done in self.calls.values():
+                    done.set()
+
+    def find_thread(self):
+        """The Codex conversation open in this board's project. Several make the choice the human's (--thread)."""
+        if self.thread:
+            return self.thread
+        folder = os.path.normcase(os.path.realpath(os.path.dirname(self.board)))
+        here = []
+        for tid in self.request("thread/loaded/list").get("data") or []:
+            thread = self.request("thread/read", {"threadId": tid}).get("thread") or {}
+            cwd = thread.get("cwd") or next((e.get("cwd") for e in thread.get("environments") or [] if e.get("cwd")), None)
+            if cwd and (os.path.normcase(os.path.realpath(cwd)) + os.sep).startswith(folder + os.sep):
+                here.append(tid)
+        if len(here) > 1:
+            raise KanvasError(f"Several Codex conversations are open in this project: {', '.join(here)}. Pick one with --thread ID")
+        return here[0] if here else None
+
+    def idle(self):
+        return not self.busy and not self.turn
+
+    def push_batch(self, ds, board, known, steer=False):
+        ids = [d["id"] for d in ds]
+        text = f"[Kanvas board notice {' '.join(ids)}]\n" + batch_message(ds, board, known, f"run `{ack_command(self.board, ids)}`")
+        try:
+            self.request("turn/start", {"threadId": self.thread, "input": [{"type": "text", "text": text}]})
+        except KanvasError as e:
+            print(f"kanvas codex: {e}", file=sys.stderr, flush=True)
+            return False
+        self.busy = True  # until Codex says the turn ended
+        return True
+
+    def run(self):
+        self.ws = WebSocket(self.url)
+        threading.Thread(target=self.reader, daemon=True).start()
+        self.request("initialize", {"clientInfo": {"name": "kanvas", "title": "Kanvas", "version": VERSION}})
+        self.ws.send({"jsonrpc": "2.0", "method": "initialized"})
+        while not self.closed.is_set():
+            self.thread = self.find_thread()
+            if self.thread:
+                break
+            print("kanvas codex: waiting for a Codex conversation in this project "
+                  "(start one with `codex --remote " + self.url + "`)", file=sys.stderr, flush=True)
+            self.closed.wait(3)
+        if self.closed.is_set():
+            raise KanvasError(f"Lost the Codex app server at {self.url}")
+        resumed = self.request("thread/resume", {"threadId": self.thread, "excludeTurns": True}).get("thread") or {}
+        self.busy = (resumed.get("status") or {}).get("type") == "active"
+        print(f"kanvas codex: telling Codex conversation {self.thread} about {board_name(self.board)}", file=sys.stderr, flush=True)
+        prune_agents(self.board)
+        self.beat()
+        self.ready.set()
+        worker = threading.Thread(target=self.loop, daemon=True)
+        worker.start()
+        try:
+            self.closed.wait()
+        except KeyboardInterrupt:
+            pass
+        finally:
+            self.done.set()
+            worker.join(timeout=2)
+            self.fail_pending("the Codex conversation closed before the notice reached it")
+            self.ws.close()
+            try:
+                os.remove(self.session_path())
+            except OSError:
+                pass
+
+
+class OpenCodeBridge(Channel):
+    """`kanvas opencode`: tells an OpenCode session about the board, through the OpenCode server that its interface
+    uses (`opencode api`, which knows the server and its password). Each notice is queued in the session: OpenCode
+    delivers it when the agent is free, so a notice never cuts into its work. Notices wait while the agent works; once
+    it is free, all of them go as one message, written from the board as it is then."""
+
+    batch = True
+    steer = True
+
+    def __init__(self, board_path, label, directory, session=None, poll=0.5, api=None, agent=None):
+        super().__init__(board_path, label, tool="opencode", poll=poll, agent=agent)
+        self.directory = os.path.normcase(os.path.realpath(directory))
+        self.session = session
+        self.api = api or self.opencode_api
+        self.closed = threading.Event()
+
+    @staticmethod
+    def opencode_api(*args, data=None):
+        cmd = ["opencode", "api", *args] + (["--data", json.dumps(data, ensure_ascii=False)] if data is not None else [])
+        try:
+            proc = subprocess.run(cmd, capture_output=True, timeout=30)
+        except FileNotFoundError:
+            raise KanvasError("OpenCode is not installed here: `opencode` is not on the PATH")
+        except subprocess.TimeoutExpired:
+            raise KanvasError("OpenCode's server did not answer in 30 s")
+        out = proc.stdout.decode("utf-8", "replace")
+        if proc.returncode != 0:
+            raise KanvasError(f"OpenCode refused {' '.join(args)}: {(proc.stderr or proc.stdout).decode('utf-8', 'replace').strip()[:300]}")
+        try:
+            return json.loads(out) if out.strip() else {}
+        except ValueError:
+            raise KanvasError(f"OpenCode answered {' '.join(args)} with something that is not JSON")
+
+    def find_session(self):
+        """The OpenCode session working in this folder. Several make the choice the human's (--session)."""
+        if self.session:
+            return self.session
+        here = []
+        for s in (self.api("GET", "/api/session", "--param", "limit=200").get("data") or []):
+            loc = (s.get("location") or {}).get("directory") or s.get("directory")
+            if s.get("parentID") or not loc or (s.get("time") or {}).get("archived"):
+                continue
+            if os.path.normcase(os.path.realpath(loc)) == self.directory:
+                here.append(s["id"])
+        if len(here) > 1:
+            raise KanvasError(f"Several OpenCode sessions work in {self.directory}: {', '.join(here)}. Pick one with --session ID")
+        return here[0] if here else None
+
+    def idle(self):
+        """OpenCode lists the sessions running a turn; this one is free when it is not among them."""
+        try:
+            running = self.api("GET", "/api/session/active").get("data") or {}
+        except KanvasError as e:
+            print(f"kanvas opencode: {e}", file=sys.stderr, flush=True)
+            return False
+        return self.session not in running
+
+    def push_batch(self, ds, board, known, steer=False):
+        ids = [d["id"] for d in ds]
+        text = f"[Kanvas board notice {' '.join(ids)}]\n" + batch_message(ds, board, known, f"run `{ack_command(self.board, ids)}`")
+        try:
+            # steer: into the turn running now, for the human's words; queue: when the agent is free.
+            self.api("POST", f"/api/session/{self.session}/prompt",
+                     data={"text": text, "delivery": "steer" if steer else "queue"})
+        except KanvasError as e:
+            print(f"kanvas opencode: {e}", file=sys.stderr, flush=True)
+            return False
+        return True
+
+    def run(self):
+        while not self.closed.is_set():
+            self.session = self.find_session()
+            if self.session:
+                break
+            print(f"kanvas opencode: waiting for an OpenCode session in {self.directory}", file=sys.stderr, flush=True)
+            self.closed.wait(3)
+        if not self.session:
+            return
+        print(f"kanvas opencode: telling OpenCode session {self.session} about {board_name(self.board)}", file=sys.stderr, flush=True)
+        prune_agents(self.board)
+        self.beat()
+        self.ready.set()
+        worker = threading.Thread(target=self.loop, daemon=True)
+        worker.start()
+        try:
+            self.closed.wait()
+        except KeyboardInterrupt:
+            pass
+        finally:
+            self.done.set()
+            worker.join(timeout=2)
+            self.fail_pending("the OpenCode session closed before the notice reached it")
+            try:
+                os.remove(self.session_path())
+            except OSError:
+                pass
+
+
+def cmd_opencode(args):
+    path = board_path(args)
+    directory = os.path.abspath(args.directory or os.getcwd())
+    OpenCodeBridge(path, args.label or f"OpenCode · {os.path.basename(directory)}", directory, args.session,
+                   agent=getattr(args, "as_name", None)).run()
+
+
+def cmd_codex(args):
+    path = board_path(args)
+    folder = os.path.basename(os.path.dirname(path))
+    CodexBridge(path, args.label or f"Codex · {folder}", args.server, args.thread, agent=getattr(args, "as_name", None)).run()
+
+
 class BoardServer(ThreadingHTTPServer):
     """Serves every open board, each at /<name>/."""
 
     daemon_threads = True
     # On Windows SO_REUSEADDR lets two servers share a port.
     allow_reuse_address = os.name != "nt"
+
+    def handle_error(self, request, client_address):
+        # A browser that closes the tab or reloads mid-answer is not an error worth a traceback in the log.
+        if isinstance(sys.exc_info()[1], (BrokenPipeError, ConnectionResetError)):
+            return
+        super().handle_error(request, client_address)
 
     def __init__(self, address, path=None, hosts=LOCAL_NAMES, quiet=False, share=None, remember=None):
         """`hosts` are the names allowed in the Host header, or None for any. A server made with
@@ -2142,6 +3458,9 @@ class BoardServer(ThreadingHTTPServer):
         super().__init__(address, BoardHandler)
         self.hosts = hosts
         self.quiet = quiet
+        # A command that starts a new agent for a task ("Start with a new agent" in the board), set by the human with
+        # `serve --agent-command` or $KANVAS_AGENT_COMMAND; None leaves the button out.
+        self.agent_command = os.environ.get("KANVAS_AGENT_COMMAND") or None
         self.remember = remember
         self.main = share or self
         self.opens_boards = share is None
@@ -2368,7 +3687,11 @@ class BoardHandler(BaseHTTPRequestHandler):
             self.send_header(k, v)
         self.end_headers()
         if body:
-            self.wfile.write(body)
+            try:
+                self.wfile.write(body)
+            except (BrokenPipeError, ConnectionResetError):
+                # The browser closed the tab or reloaded before the answer arrived: nothing to report.
+                self.close_connection = True
 
     def _error(self, code, message):
         self._send(code, json.dumps({"error": message}).encode("utf-8"))
@@ -2490,6 +3813,11 @@ class BoardHandler(BaseHTTPRequestHandler):
             if self.headers.get("If-None-Match") == tag:
                 return self._send(304, headers={"ETag": tag})
             return self._send(200, data, headers={"ETag": tag})
+        if rest == ["api", "agents"]:
+            # Whoever may change the board (this computer, and phones on Tailscale) may tell its agents too. Starting
+            # a new agent runs a command, so it stays with this computer.
+            info = dict(agents_info(path), launch=bool(self.server.main.agent_command) and self._from_this_computer())
+            return self._send(200, json.dumps(info, ensure_ascii=False).encode("utf-8"))
         if len(rest) == 2 and rest[0] == FILES_DIR:
             return self._image(path, f"{FILES_DIR}/{rest[1]}")
         return self._error(404, "Not found")
@@ -2528,6 +3856,56 @@ class BoardHandler(BaseHTTPRequestHandler):
             return self._error(500, f"Cannot save the image: {e}")
         self._send(200, json.dumps({"path": ref}).encode("utf-8"))
 
+    def _send_to_agent(self, name, board):
+        """Ask a connected agent session to work on a task: {"task": ID, "session": ID}."""
+        text = self._read_json()
+        if text is None:
+            return
+        try:
+            body = json.loads(text)
+            task, sid = body.get("task"), body.get("session")
+            if not isinstance(task, str) or not isinstance(sid, str):
+                raise KanvasError("Expected the task and the session to send it to")
+            d, created = work_request(board, task, sid)
+        except ValueError:
+            return self._error(400, "Expected JSON")
+        except AttributeError:
+            return self._error(400, "Expected a JSON object")
+        except KanvasError as e:
+            return self._error(409, str(e))
+        except OSError as e:
+            return self._error(503, f"Could not record the request: {e}")
+        if created and not self.server.quiet:
+            print(f"[{time.strftime('%H:%M:%S')}] {name}: sent {d['task']} to {d['label']}", flush=True)
+        self._send(200, json.dumps({"delivery": d, "created": created}, ensure_ascii=False).encode("utf-8"))
+
+    def _launch_agent(self, name, board):
+        """Start a new agent for a task: {"task": ID}. Only from this computer, and only with --agent-command."""
+        command = self.server.main.agent_command
+        if not command:
+            return self._error(409, "Kanvas runs without an agent command: start it with `kanvas serve --agent-command CMD`")
+        if not self._from_this_computer():
+            return self._error(403, "Only the computer running Kanvas can start agents")
+        text = self._read_json()
+        if text is None:
+            return
+        try:
+            task = json.loads(text).get("task")
+            if not isinstance(task, str):
+                raise KanvasError("Expected the task to start an agent for")
+            d, agent = launch_agent(board, task, command)
+        except ValueError:
+            return self._error(400, "Expected JSON")
+        except AttributeError:
+            return self._error(400, "Expected a JSON object")
+        except KanvasError as e:
+            return self._error(409, str(e))
+        except OSError as e:
+            return self._error(503, f"Could not start the agent: {e}")
+        if not self.server.quiet:
+            print(f"[{time.strftime('%H:%M:%S')}] {name}: started {agent} for {d['task']}", flush=True)
+        self._send(200, json.dumps({"delivery": d, "agent": agent}, ensure_ascii=False).encode("utf-8"))
+
     def _phone(self, name):
         """The board's addresses for phones on Tailscale, with a QR code of the first; none while closed to phones.
         `manage` says whether this request may open or close Kanvas to phones."""
@@ -2542,6 +3920,10 @@ class BoardHandler(BaseHTTPRequestHandler):
         parts = self._route()
         if parts[1:] == ["api", "files"] and self.server.board_path(parts[0]) is not None:
             return self._upload_image(self.server.board_path(parts[0]))
+        if parts[1:] == ["api", "agents", "send"] and self.server.board_path(parts[0]) is not None:
+            return self._send_to_agent(parts[0], self.server.board_path(parts[0]))
+        if parts[1:] == ["api", "agents", "launch"] and self.server.board_path(parts[0]) is not None:
+            return self._launch_agent(parts[0], self.server.board_path(parts[0]))
         if parts[1:] == ["api", "phone"] and self.server.board_path(parts[0]) is not None:
             if not self._may_manage():
                 return self._error(403, "Only the computer running Kanvas can open it to phones")
@@ -2641,13 +4023,30 @@ class BoardHandler(BaseHTTPRequestHandler):
                 current_tag = etag_of(current)
                 if expected != current_tag:
                     return self._send(409, current, headers={"ETag": current_tag})
+                staged = []
                 if data != current:
-                    write_text_atomic(path, data.decode("utf-8"))
+                    # The notices are written first, as staged, so a crash between the two writes cannot lose
+                    # them; they go out once the board is saved.
+                    try:
+                        staged = notify_human_changes(path, parse_board(current.decode("utf-8")), board, "staged")
+                    except (KanvasError, OSError, ValueError, UnicodeDecodeError) as e:
+                        print(f"Could not tell the agents about the change to {parts[0]}: {e}", file=sys.stderr, flush=True)
+                    try:
+                        write_text_atomic(path, data.decode("utf-8"))
+                    except BaseException:
+                        release_staged(path, staged, keep=False)
+                        raise
                     if not self.server.quiet:
                         print(f"[{time.strftime('%H:%M:%S')}] saved {parts[0]} from the browser", flush=True)
         except (KanvasError, OSError) as e:
             # The reason names the board's folder or its lock file.
             return self._error(503, str(e) if self._from_this_computer() else "The computer running Kanvas could not save the board")
+        # After the board is saved, never before: the agent hears only about changes that were kept.
+        release_staged(path, staged)
+        for d in staged:
+            if not self.server.quiet:
+                print(f"[{time.strftime('%H:%M:%S')}] {parts[0]}: told {d['label'] or 'the next agent session'} the human "
+                      f"{EVENT_LABELS.get(d['kind'], d['kind'])} on {d['task']}", flush=True)
         self._send(200, data, headers={"ETag": etag_of(data)})
 
 
@@ -2656,7 +4055,7 @@ def start_server(path, host="127.0.0.1", port=DEFAULT_PORT, quiet=False, remembe
     the boards open last time come back first, and `phone_wanted` says whether phones could connect."""
     hosts = LOCAL_NAMES if host in ("127.0.0.1", "localhost") else None
     last_error = None
-    for p in range(port, port + 20):
+    for p in range(port, min(port + 20, 65536)):  # never past the last port
         try:
             server = BoardServer((host, p), None, hosts, quiet, remember=remember)
             server.phone_wanted = server.restore() if remember else False
@@ -2686,7 +4085,7 @@ def port_free(host, port):
 
 def find_running(port, host="127.0.0.1"):
     """Return (url, version) of a Kanvas already serving boards on one of the ports `serve` tries, or None."""
-    for p in range(port, port + 20):
+    for p in range(port, min(port + 20, 65536)):  # never past the last port
         # A Kanvas may hold a later port after the ones below it were freed. Only taken ports are
         # probed, since connecting to a closed port takes seconds on Windows.
         if port_free(host, p):
@@ -2850,6 +4249,8 @@ def cmd_serve(args):
             webbrowser.open(board_url)
         return
     server = start_server(path, args.host, args.port, remember=state_file() if local else None)
+    if getattr(args, "agent_command", None):
+        server.agent_command = args.agent_command
     if args.tailscale:
         try:
             server.open_to_phone()
@@ -3181,9 +4582,29 @@ def build_parser():
                    help=f"port to serve on (default: %(default)s), or the next free one up to 19 higher ({DEFAULT_PORT + 19} by default); "
                         "when a Kanvas already runs on any of these ports, serve opens the board there and returns")
     p.add_argument("--host", default="127.0.0.1", help="use 0.0.0.0 for containers or remote machines")
+    p.add_argument("--agent-command", metavar="CMD",
+                   help="a shell command that starts a new agent session for a task, for \"Start with a new agent\" in the "
+                        "board (default: $KANVAS_AGENT_COMMAND). It gets KANVAS_TASK, KANVAS_BOARD, KANVAS_AGENT (the name to "
+                        "connect as: `kanvas opencode --as $KANVAS_AGENT`), KANVAS_STATE_DIR, KANVAS_PYTHON and KANVAS_SCRIPT")
     p.add_argument("--tailscale", action="store_true", help="also open the boards to your phone and other devices on your Tailscale network")
     p.add_argument("--saved", action="store_true", help="serve only the boards open last time, without a project of its own (for `kanvas service`)")
     p.add_argument("--no-open", action="store_true", help="do not open a browser")
+    p = add("ack", cmd_ack, "confirm that you received notices the board sent to your session (their delivery_id)")
+    p.add_argument("delivery_id", nargs="+")
+    p = add("channel", cmd_channel, "connect an agent session to the board, so the human can send it tasks "
+                                    "(a Claude Code channel: run by Claude Code from .mcp.json, not by hand)")
+    p.add_argument("--label", help="the session's name in the board (default: $KANVAS_AGENT or 'Claude Code · <folder>')")
+    p = add("opencode", cmd_opencode, "connect an OpenCode session to the board through the OpenCode server, so your "
+                                      "clicks in the board reach it")
+    p.add_argument("--session", metavar="ID", help="the session to tell (default: the one working in --directory)")
+    p.add_argument("--directory", metavar="DIR", help="the folder the OpenCode session works in (default: this one)")
+    p.add_argument("--label", help="the session's name in the board (default: 'OpenCode · <folder>')")
+    p = add("codex", cmd_codex, "connect a Codex conversation to the board through the Codex app server, so your clicks "
+                                "in the board reach it")
+    p.add_argument("--server", required=True, metavar="URL",
+                   help="the app server Codex runs on, as started with `codex app-server --listen ws://127.0.0.1:PORT`")
+    p.add_argument("--thread", metavar="ID", help="the conversation to tell (default: the one open in this project)")
+    p.add_argument("--label", help="the session's name in the board (default: 'Codex · <folder>')")
     p = add("close", cmd_close, "close this board without deleting its file; the last board stops Kanvas")
     p.add_argument("--port", type=int, default=DEFAULT_PORT,
                    help="look for Kanvas on this port and the next 19 (default: %(default)s)")
