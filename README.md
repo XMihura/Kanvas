@@ -210,6 +210,33 @@ kanvas opencode                                       # in the folder the OpenCo
 `kanvas codex` finds the Codex conversation open in the project (with several, pick one with `--thread ID`). Notices wait while Codex works; once it is idle, all of them start one new turn, written from the board as it is then. The agent confirms it with `kanvas ack`.
 - Sessions and notices are kept in your user folder, not in the project, and notices are deleted after a week.
 
+## Suggestions from Clef (optional)
+
+Kanvas can ask [Clef](https://developers.cloudflare.com/workers-ai/), Cloudflare's decision model, three questions about your board, and show the answers in the task panel:
+
+- **Missing dependencies.** When a task is created, approved or edited, Clef says which unfinished tasks it may need first: *Clef: may need BE-05 first, 82 %*, with **Add dependency** and **Dismiss**.
+- **Repeated proposals.** When an agent proposes a task, Clef says which task already on the board it may repeat: *Clef: may repeat BE-05, 77 %*, with **Dismiss**. Rejecting such a proposal offers to make the tasks that depended on it depend on BE-05 instead, so they do not lose their place in the order.
+- **Order of work that would collide.** When a task becomes ready or starts, Clef says which other tasks in progress or ready to start would change the same code: *Clef: may change the same code as FE-02 (in progress), 80 %*. The suggestion shows on both tasks, with **Do after FE-02** or **Do FE-02 after** for whichever has not started; when both are in progress, **Pause, do after FE-02** pauses one and makes it wait, in one click. **Not a clash** dismisses the pair for good. Agents working side by side on such tasks get in each other's way; an agent that sees the clash first asks you in the board which goes first.
+
+Nothing changes on the board until you click **Add dependency**, and a dismissed suggestion does not come back for that task. Suggestions are kept in your user folder, not in `kanvas.json`.
+
+A task with suggestions you have not reviewed shows a small **!** on its card, its panel says so above **Start**, and the **YOLO** dialog names the tasks of the chain that have them, since a missing dependency there can make agents work in the wrong order. None of these stops you.
+
+Clef answers in the background, three questions at a time, and saves never wait for it. When many tasks change at once, a newer question about a task replaces one still waiting, so nothing is dropped; a call that fails for a passing reason is tried again. If Clef is slow or cannot be reached, the board works as without it and the server's log says why, once per reason.
+
+Clef is off unless the server starts with all three of these in its environment:
+
+```bash
+export KANVAS_CLEF=1 CLOUDFLARE_ACCOUNT_ID=... CLOUDFLARE_API_TOKEN=...   # a token that can run Workers AI models
+kanvas serve
+```
+
+`serve` then says *Clef: on* and asks Clef one small question; the log says whether it answers. Credentials Cloudflare refuses turn Clef off, with one message, until the server restarts. Kanvas sends Cloudflare the board's title and its tasks' IDs, titles, states and descriptions (clipped to 600 characters for the task asked about and 240 for the others). Notes, summaries, images and your project's files are never sent. The token stays in memory. Keep Clef off for boards whose content must not leave your computer. Cloudflare charges for the text sent: about 4 US cents over the whole life of a 15-task board, and up to about 2.40 USD for a 100-task board, since every task is compared with every other.
+
+**On macOS**, the Python from python.org ships without CA certificates, so every call fails with `CERTIFICATE_VERIFY_FAILED`. Start Kanvas with `SSL_CERT_FILE=/etc/ssl/cert.pem`, or run **Install Certificates.command** in its folder in Applications.
+
+How well it works, measured on labelled cases: [docs/clef-viability.md](docs/clef-viability.md).
+
 ## On your phone
 
 Kanvas can open your boards on your phone, or on another computer, through [Tailscale](https://tailscale.com), a free private network between your own devices.

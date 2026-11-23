@@ -219,7 +219,8 @@ class BrowserSmokeTests(unittest.TestCase):
         self.path = os.path.join(self.dir, "demo", "kanvas.json")
         shutil.copyfile(os.path.join(ROOT, "examples", "sample.json"), self.path)
         self.env = dict(os.environ, KANVAS_STATE_DIR=os.path.join(self.dir, "state"), PYTHONUNBUFFERED="1")
-        self.env.pop("KANVAS_BOARD", None)
+        for var in ("KANVAS_BOARD", "KANVAS_CLEF", "KANVAS_CLEF_FAKE", "CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN"):
+            self.env.pop(var, None)
         self.url = self.start_server()
         self.page = self.start_chrome()
 
@@ -974,6 +975,144 @@ class AgentNoticeBrowserTests(BrowserSmokeTests):
         self.confirm()
         self.told(("deleted", "G-01"))
         self.assertEqual(self.page.logged(), [])
+
+
+class ClefBrowserTests(AgentNoticeBrowserTests):
+    """The board with Clef on, answering from a fake table (KANVAS_CLEF_FAKE): nothing leaves the computer."""
+
+    FAKE = {"rules": [{"question": "needs:BE-05", "state": 'planned:\nFE-05 "', "answer": {"type": "noul", "noul": 0.82}},
+                      {"question": "needs:FE-04", "state": 'planned:\nFE-05 "', "answer": {"type": "noul", "noul": 0.75}},
+                      {"question": "repeats:BE-05", "state": 'A new proposal:\nG-01 "', "answer": {"type": "noul", "noul": 0.77}},
+                      {"question": "clash:FE-02", "state": 'The task:\nFE-04 "', "answer": {"type": "noul", "noul": 0.8}}],
+            "default": {"type": "noul", "noul": 0.1}}
+    TIP = "#panel .clef-tip[data-clef={}]"
+
+    def start_server(self):
+        fake = os.path.join(self.dir, "clef.json")
+        with open(fake, "w", encoding="utf-8") as f:
+            json.dump(self.FAKE, f)
+        self.env["KANVAS_CLEF_FAKE"] = fake
+        return super().start_server()
+
+    def test_with_clef_on_the_agent_hears_of_a_note_as_without_it(self):
+        self.assertIn("Clef: on, answering from the fake table", read(os.path.join(self.dir, "serve.log")))
+        self.load()
+        self.open_task("BE-03")
+        self.type_note("Does the geocoding API need a key?")
+        self.told(("note", "BE-03"))
+        with self.state():
+            [d] = kanvas.deliveries(self.path)
+            text = kanvas.event_message(d, kanvas.load_board(self.path))
+        self.assertNotIn("clef", d)
+        self.assertIn("> Does the geocoding API need a key?", text)
+        self.assertNotIn("Clef", text)
+        self.assertEqual(self.page.logged(), [])
+
+    def tip(self, tid):
+        return f"document.querySelector({json.dumps(self.TIP.format(tid))})"
+
+    def test_the_panel_shows_adds_and_dismisses_suggested_dependencies(self):
+        self.load()
+        self.open_task("FE-05")
+        self.click("Approve")
+        self.told(("approved", "FE-05"))
+        self.until("Clef's suggestion", f"{self.tip('BE-05')}?.innerText.includes('Clef: may need BE-05 first, 82 %')")
+        self.until("the second suggestion", f"{self.tip('FE-04')}?.innerText.includes('Clef: may need FE-04 first, 75 %')")
+        self.assertEqual(self.task("FE-05")["deps"], ["FE-02"], "nothing is added without a click")
+        self.click("Add dependency", self.TIP.format("BE-05"))
+        self.wait_for("BE-05 among FE-05's dependencies", lambda: "BE-05" in self.task("FE-05")["deps"])
+        self.until("the added suggestion to go", f"!{self.tip('BE-05')}")
+        self.click("Dismiss", self.TIP.format("FE-04"))
+        self.until("the dismissed suggestion to go", f"!{self.tip('FE-04')}")
+        with self.state():
+            self.wait_for("the dismissal to be kept", lambda: kanvas.clef_store(self.path)["dismissed"]["deps"].get("FE-05") == ["FE-04"])
+        self.load()
+        self.open_task("FE-05")
+        time.sleep(2.5)  # a few polls of api/clef
+        self.assertTrue(self.page.js(f"!{self.tip('FE-04')} && !{self.tip('BE-05')}"), "neither comes back")
+        self.assertEqual(self.task("FE-05")["deps"], ["FE-02", "BE-05"])
+        self.assertEqual(self.page.logged(), [])
+
+    def test_clef_suggests_an_order_for_work_that_would_collide(self):
+        self.load()
+        self.open_task("FE-04")
+        self.click("Start")
+        self.until("the order suggestion", f"{self.tip('FE-02')}?.innerText.includes('Clef: may change the same code as FE-02 (in progress), 80 %')")
+        self.assertTrue(self.page.js(f"!{self.tip('FE-02')}.innerText.includes('Do after FE-02')"), "FE-04 is in progress already")
+        self.open_task("FE-02")
+        self.until("the same pair on FE-02", f"{self.tip('FE-04')}?.innerText.includes('may change the same code as FE-04')")
+        self.click("Not a clash", self.TIP.format("FE-04"))
+        self.until("the dismissed pair to go", f"!{self.tip('FE-04')}")
+        with self.state():
+            self.wait_for("the dismissal to be kept", lambda: kanvas.clef_store(self.path)["dismissed"]["order"].get("FE-04") == ["FE-02"])
+        self.assertEqual(self.task("FE-04")["deps"], ["FE-01"], "nothing is added without a click")
+        self.assertEqual(self.page.logged(), [])
+
+    def test_two_clashing_tasks_in_progress_are_ordered_in_one_click(self):
+        self.load()
+        self.open_task("FE-04")
+        self.click("Start")
+        self.until("the order suggestion", f"{self.tip('FE-02')}?.innerText.includes('Pause, do after FE-02')")
+        self.click("Pause, do after FE-02", self.TIP.format("FE-02"))
+        self.wait_for("FE-04 paused and waiting for FE-02",
+                      lambda: (lambda t: t["state"] == "todo" and "FE-02" in t["deps"])(self.task("FE-04")))
+        self.until("the pair to go", f"!{self.tip('FE-02')}")
+        self.told(("start", "FE-04"), ("paused", "FE-04"))
+        self.assertEqual(self.page.logged(), [])
+
+    def test_start_and_yolo_warn_about_unreviewed_suggestions(self):
+        self.load()
+        self.open_task("FE-05")
+        self.click("Approve")
+        alert = "document.querySelector('.card[data-id=\"FE-05\"] .clef-alert')"
+        self.until("the alert on the card", f"{alert}?.getAttribute('aria-label') === '2 Clef suggestions to review'")
+        self.until("the line above Start", "document.querySelector('#panel .now-hint.clef-warn')?.innerText.includes('2 Clef suggestions for this task wait below')")
+        self.click("YOLO up to here", "#panel .now")
+        self.until("the YOLO dialog", "!!document.querySelector('dialog.dlg[open]')")
+        self.assertIn("has Clef suggestions you have not reviewed: FE-05", self.page.js("document.querySelector('dialog.dlg .clef-warn').innerText"))
+        self.page.js("document.querySelector('dialog.dlg button[value=cancel]').click()")
+        self.assertFalse(self.task("FE-05").get("yolo"), "the warning never decides for the human")
+        self.click("Add dependency", self.TIP.format("BE-05"))
+        self.until("one suggestion left", f"{alert}?.getAttribute('aria-label') === '1 Clef suggestion to review'")
+        self.click("Dismiss", self.TIP.format("FE-04"))
+        self.until("no alert once both are reviewed", f"!{alert} && !document.querySelector('#panel .now-hint.clef-warn')")
+        self.assertEqual(self.page.logged(), [])
+
+    def test_rejecting_a_repeat_hands_its_dependents_to_the_task_it_repeats(self):
+        self.load()
+        self.cli("propose", "-", "Retry Open-Meteo requests when they fail", "Up to three retries with backoff.")
+        self.cli("propose", "-", "Tests for the retries", "Unit tests of the retry loop.", "--deps", "G-01")
+        self.until("the agent's proposals", "!!document.querySelector('.card[data-id=\"G-02\"]')")
+        self.open_task("G-01")
+        self.until("Clef's flag", f"{self.tip('BE-05')}?.innerText.includes('Clef: may repeat BE-05, 77 %')")
+        self.click("Reject")
+        self.until("the offer to rewire", "document.querySelector('dialog.dlg[open] .clef-rewire input')?.checked === true")
+        self.assertIn('Make G-02 depend on BE-05 "Retry failed upstream calls" instead', self.page.js("document.querySelector('dialog.dlg .clef-rewire').innerText"))
+        self.confirm()
+        self.wait_for("G-01 gone and G-02 waiting for BE-05", lambda: [t["id"] for t in kanvas.load_board(self.path)["tasks"] if t["id"] == "G-01"] == [] and self.task("G-02")["deps"] == ["BE-05"])
+        self.assertEqual(self.page.logged(), [])
+
+    def test_a_proposal_that_repeats_a_task_says_so_until_dismissed(self):
+        self.load()
+        self.cli("propose", "-", "Retry Open-Meteo requests when they fail", "Up to three retries with backoff.")
+        self.until("the agent's proposal", "!!document.querySelector('.card[data-id=\"G-01\"]')")
+        self.open_task("G-01")
+        self.until("Clef's flag", f"{self.tip('BE-05')}?.innerText.includes('Clef: may repeat BE-05, 77 %')")
+        self.assertIn("Retry failed upstream calls", self.page.js(f"{self.tip('BE-05')}.innerText"))
+        self.click("Dismiss", self.TIP.format("BE-05"))
+        self.until("the flag to go", f"!{self.tip('BE-05')}")
+        self.load()
+        self.open_task("G-01")
+        time.sleep(2.5)  # a few polls of api/clef
+        self.assertTrue(self.page.js(f"!{self.tip('BE-05')}"), "it does not come back")
+        self.assertEqual(self.page.logged(), [])
+
+
+# The smoke tests run once, in BrowserSmokeTests, and the notice tests once, in AgentNoticeBrowserTests.
+for _name in [n for n in vars(BrowserSmokeTests) if n.startswith("test_")]:
+    setattr(AgentNoticeBrowserTests, _name, None)
+for _name in [n for n in list(vars(BrowserSmokeTests)) + list(vars(AgentNoticeBrowserTests)) if n.startswith("test_")]:
+    setattr(ClefBrowserTests, _name, None)
 
 
 class NewAgentBrowserTests(AgentNoticeBrowserTests):

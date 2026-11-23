@@ -1,0 +1,141 @@
+{
+  "kanvas": 1,
+  "title": "Notes app",
+  "groups": [
+    {
+      "id": "ED",
+      "name": "Editor"
+    },
+    {
+      "id": "ST",
+      "name": "Storage"
+    },
+    {
+      "id": "UI",
+      "name": "Interface"
+    },
+    {
+      "id": "DOC",
+      "name": "Docs"
+    }
+  ],
+  "tasks": [
+    {
+      "id": "ED-01",
+      "title": "Markdown preview pane",
+      "state": "todo",
+      "group": "ED",
+      "at": "2026-11-23T08:00:00Z",
+      "by": "human",
+      "desc": "A pane next to the editor that renders the note as HTML while you type."
+    },
+    {
+      "id": "ED-02",
+      "title": "Syntax highlighting in the editor",
+      "state": "todo",
+      "group": "ED",
+      "at": "2026-11-23T08:00:00Z",
+      "by": "human",
+      "desc": "Colour Markdown syntax (headings, emphasis, code) inside the editing area itself."
+    },
+    {
+      "id": "ED-03",
+      "title": "Word count in the status bar",
+      "state": "todo",
+      "group": "ED",
+      "at": "2026-11-23T08:00:00Z",
+      "by": "human",
+      "desc": "Show the word and character count of the open note in the status bar at the bottom."
+    },
+    {
+      "id": "ED-04",
+      "title": "Autosave drafts",
+      "state": "todo",
+      "group": "ED",
+      "at": "2026-11-23T08:00:00Z",
+      "by": "human",
+      "desc": "Save the open note every 10 seconds and when the window loses focus, through the storage module."
+    },
+    {
+      "id": "ED-05",
+      "title": "Export a note as PDF",
+      "state": "todo",
+      "group": "ED",
+      "at": "2026-11-23T08:00:00Z",
+      "by": "human",
+      "desc": "A menu item that prints the open note to a PDF file."
+    },
+    {
+      "id": "ED-06",
+      "title": "Redesign the editor toolbar",
+      "state": "todo",
+      "group": "ED",
+      "at": "2026-11-23T08:00:00Z",
+      "by": "human",
+      "desc": "Replace the text buttons of the editor toolbar with icons, regroup them and add tooltips."
+    },
+    {
+      "id": "ED-07",
+      "title": "Formatting shortcuts",
+      "state": "todo",
+      "group": "ED",
+      "at": "2026-11-23T08:00:00Z",
+      "by": "human",
+      "desc": "Ctrl+B, Ctrl+I and Ctrl+K apply bold, italic and links, the same actions as the toolbar buttons, which they reuse."
+    },
+    {
+      "id": "ST-01",
+      "title": "Move storage to IndexedDB",
+      "state": "todo",
+      "group": "ST",
+      "at": "2026-11-23T08:00:00Z",
+      "by": "human",
+      "desc": "Replace the localStorage storage module with IndexedDB, keeping its save, load and list functions."
+    },
+    {
+      "id": "ST-02",
+      "title": "Sync notes to a server",
+      "state": "todo",
+      "group": "ST",
+      "at": "2026-11-23T08:00:00Z",
+      "by": "human",
+      "desc": "Push and pull notes to a sync server from the storage module, resolving conflicts by last edit."
+    },
+    {
+      "id": "UI-01",
+      "title": "Dark theme",
+      "state": "todo",
+      "group": "UI",
+      "at": "2026-11-23T08:00:00Z",
+      "by": "human",
+      "desc": "A dark colour theme that follows the system setting."
+    },
+    {
+      "id": "UI-02",
+      "title": "Search in the sidebar",
+      "state": "todo",
+      "group": "UI",
+      "at": "2026-11-23T08:00:00Z",
+      "by": "human",
+      "desc": "A search field above the sidebar's list of notes that filters it as you type."
+    },
+    {
+      "id": "UI-03",
+      "title": "Sort the sidebar",
+      "state": "todo",
+      "group": "UI",
+      "at": "2026-11-23T08:00:00Z",
+      "by": "human",
+      "desc": "Sort the sidebar's list of notes by title or by last edit, chosen from a menu above the list."
+    },
+    {
+      "id": "DOC-01",
+      "title": "Write the README",
+      "state": "todo",
+      "group": "DOC",
+      "at": "2026-11-23T08:00:00Z",
+      "by": "human",
+      "desc": "How to install, build and use the app."
+    }
+  ]
+}

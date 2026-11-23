@@ -384,6 +384,15 @@ button.add-line:hover { color: var(--text); }
 .dep:hover button, .dep button:focus-visible { opacity: 1; }
 .dep button:hover { color: var(--text); background: transparent; border-color: transparent; }
 .empty-line { color: var(--faint); font-size: 13px; }
+.clef-tip { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin-top: 8px; padding: 6px 8px; border: 1px dashed var(--border-strong); border-radius: 6px; font-size: 12.5px; color: var(--muted); }
+.clef-tip .clef-say { color: var(--text); }
+.clef-tip .t { flex: 1; min-width: 8em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.clef-tip .clef-acts { display: flex; gap: 6px; margin-left: auto; }
+.clef-tip button { padding: 2px 8px; font-size: 12px; }
+.clef-alert { display: inline-flex; align-items: center; gap: 3px; font-size: 10px; font-weight: 800; letter-spacing: .08em; padding: 2px 6px; border-radius: 4px; color: var(--text); background: color-mix(in srgb, var(--danger) 16%, var(--surface)); box-shadow: inset 0 0 0 1.5px var(--danger); }
+.clef-alert b { color: var(--danger); font-size: 11px; }
+.clef-warn { color: var(--text); }
+.clef-warn::before { content: "! "; color: var(--yolo-mark); font-weight: 800; }
 .md { font-size: 13.5px; overflow-wrap: anywhere; }
 .md > :first-child { margin-top: 0; } .md > :last-child { margin-bottom: 0; }
 .md p, .md ul, .md ol, .md pre, .md blockquote { margin: 0 0 8px; }
@@ -2033,6 +2042,8 @@ let writes = 0;         // saves started, so a poll that overlapped one is dropp
 let saveQueue = Promise.resolve();
 // Agent sessions connected to this board with `kanvas channel`, and the latest requests sent to them (served boards only).
 let agents = { sessions: [], deliveries: [] }, agentsSeen = "", agentsKnown = null;
+// What Clef suggests for the board's tasks, when Kanvas runs with it (api/clef).
+let clefView = { on: false, deps: {}, dupes: {}, order: {} }, clefSeen = "";
 
 const LEVEL_GAP = { min: 30, max: 500 };
 const MAX_ZOOM = 2, MIN_ZOOM = 0.2;
@@ -2271,7 +2282,7 @@ async function poll() {
     } catch (e) {
       setSync("bad", e.message, e.lost, e.closed);
     }
-    if (store.kind === "server") refreshAgents();
+    if (store.kind === "server") { refreshAgents(); refreshClef(); }
   }
   setTimeout(poll, POLL_MS);
 }
@@ -2298,6 +2309,126 @@ async function refreshAgents() {
   else for (const d of fresh.reverse()) toast(`Told ${to(d)}: ${EVENT_SAYS[d.kind] || d.kind} ${d.task}`);
   // Cards say whether the work started in the board waits for an agent: they follow the sessions and notices too.
   render();
+}
+
+// ---------------------------------------------------------------------------
+// Clef: suggestions from Cloudflare's decision model, when Kanvas runs with it
+// ---------------------------------------------------------------------------
+
+async function refreshClef() {
+  let next = { on: false };
+  try {
+    const r = await fetch("api/clef", { cache: "no-store" });
+    if (r.ok) next = await r.json();
+  } catch (e) { /* the sync status already says Kanvas cannot be reached */ }
+  setClef(next);
+}
+
+function setClef(next) {
+  const seen = JSON.stringify(next);
+  if (seen === clefSeen) return;
+  clefSeen = seen;
+  clefView = { deps: {}, dupes: {}, order: {}, ...next };
+  render();  // cards show the alert, the panel the suggestions
+}
+
+// The human's "no" to a suggestion: the server keeps it, so the suggestion never comes back.
+async function dismissClef(use, task, item) {
+  const kept = clefView;
+  clefView = { ...kept, [use]: { ...kept[use], [task]: (kept[use][task] || []).filter((s) => !same(s.on || s.of || s.with, item)) } };
+  renderPanel();
+  try {
+    const r = await fetch("api/clef/dismiss", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ use, task, item }) });
+    const out = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(out.error || `Kanvas answered ${r.status}`);
+    clefSeen = "";
+    setClef(out);
+  } catch (e) {
+    toast(`Not dismissed: ${e.message === "Failed to fetch" ? "Kanvas cannot be reached" : e.message}`, "error");
+    clefView = kept;
+    renderPanel();
+  }
+}
+
+const pct = (p) => `${Math.round(100 * p)} %`;
+const clefRef = (id) => h("a", { class: "tref", href: `#${id}`, "data-ref": id }, id);
+
+// Tasks Clef thinks this one needs first. Adding one is an ordinary edit of the board, made by the human's click.
+function clefDepItems(t) {
+  if (store.readOnly || t.state === "done") return [];
+  return (clefView.deps[t.id] || []).filter((s) => get(s.on) && !t.deps.some((d) => same(d, s.on)) && !reaches(board, s.on, t.id));
+}
+function clefDupeItems(t) {
+  if (store.readOnly || t.state !== "proposed") return [];
+  return (clefView.dupes[t.id] || []).filter((s) => get(s.of));
+}
+// Pairs of tasks agents may work on at the same time that Clef thinks would change the same code, as {a, b, p}: a is
+// the task Clef was asked about. A pair shows on both tasks until the human orders them (a dependency, either way) or
+// dismisses it, and only while neither is done.
+function clefOrderItems(t) {
+  if (store.readOnly || ["done", "proposed"].includes(t.state)) return [];
+  const pairs = [];
+  for (const [a, list] of Object.entries(clefView.order || {})) {
+    for (const s of list) {
+      const b = s.with;
+      if (!(same(a, t.id) || same(b, t.id))) continue;
+      const x = get(a), y = get(b);
+      if (!x || !y || [x, y].some((z) => ["done", "proposed"].includes(z.state)) || reaches(board, a, b) || reaches(board, b, a)) continue;
+      if (pairs.some((p) => (same(p.a, b) && same(p.b, a)) || (same(p.a, a) && same(p.b, b)))) continue;
+      pairs.push({ a: x.id, b: y.id, p: s.p });
+    }
+  }
+  return pairs;
+}
+// How many of Clef's suggestions for a task still wait for the human's Add or Dismiss. They matter most before work
+// starts, so the card shows them and Start and YOLO name them; they never stop either.
+const clefPending = (t) => clefDepItems(t).length + clefDupeItems(t).length + clefOrderItems(t).length;
+const clefWord = (n) => `${n} Clef suggestion${n === 1 ? "" : "s"}`;
+function clefAlert(t) {
+  const n = t.state === "done" ? 0 : clefPending(t);
+  return n ? h("span", { class: "clef-alert", title: `${clefWord(n)} to review before work starts: open the task to add or dismiss`, "aria-label": `${clefWord(n)} to review` }, h("b", {}, "!"), n > 1 ? `CLEF ${n}` : "CLEF") : null;
+}
+
+function clefDepTips(t) {
+  const tips = clefDepItems(t);
+  return tips.map((s) => h("div", { class: "clef-tip", "data-clef": s.on },
+    h("span", { class: "clef-say" }, "Clef: may need ", clefRef(s.on), ` first, ${pct(s.p)}`),
+    h("span", { class: "t", title: get(s.on).title }, get(s.on).title),
+    h("span", { class: "clef-acts" },
+      h("button", { title: `${t.id} waits for ${s.on} until it is done`, onclick: () => undoable(ops.addDep(t.id, s.on), `${t.id} now depends on ${s.on}`) }, icon("plus"), "Add dependency"),
+      h("button", { class: "ghost", title: "Clef will not suggest it again for this task", onclick: () => dismissClef("deps", t.id, s.on) }, "Dismiss"))));
+}
+
+// Work Clef thinks would collide with this task's: the human picks which goes first, or dismisses it.
+function clefOrderTips(t) {
+  return clefOrderItems(t).map(({ a, b, p }) => {
+    const other = same(a, t.id) ? get(b) : get(a), me = t;
+    const waits = (x) => !["doing", "review"].includes(x.state);
+    const state = other.state === "doing" ? "in progress" : "ready to start";
+    // Both already in progress: one is paused and waits for the other, in one click.
+    const pauseAfter = (x, y) => undoable((bd) => { ops.state(x.id, seenOf(x), "todo")(bd); ops.addDep(x.id, y.id)(bd); },
+      `${x.id} paused, and waits for ${y.id}`);
+    const both = !waits(me) && !waits(other);
+    return h("div", { class: "clef-tip", "data-clef": other.id },
+      h("span", { class: "clef-say" }, "Clef: may change the same code as ", clefRef(other.id), ` (${state}), ${pct(p)}`),
+      h("span", { class: "t", title: other.title }, other.title),
+      h("span", { class: "clef-acts" },
+        waits(me) ? h("button", { title: `${me.id} waits until ${other.id} is done`, onclick: () => undoable(ops.addDep(me.id, other.id), `${me.id} now waits for ${other.id}`) }, icon("plus"), `Do after ${other.id}`) : null,
+        waits(other) ? h("button", { title: `${other.id} waits until ${me.id} is done`, onclick: () => undoable(ops.addDep(other.id, me.id), `${other.id} now waits for ${me.id}`) }, icon("plus"), `Do ${other.id} after`) : null,
+        both && me.state === "doing" ? h("button", { title: `Pause ${me.id} and make it wait until ${other.id} is done`, onclick: () => pauseAfter(me, other) }, icon("pause"), `Pause, do after ${other.id}`) : null,
+        both && other.state === "doing" ? h("button", { title: `Pause ${other.id} and make it wait until ${me.id} is done`, onclick: () => pauseAfter(other, me) }, icon("pause"), `Pause ${other.id}, do it after`) : null,
+        h("button", { class: "ghost", title: "They do not change the same code: Clef will not suggest it again for these two tasks", onclick: () => { dismissClef("order", a, b); dismissClef("order", b, a); } }, "Not a clash")));
+  });
+}
+
+// Tasks Clef thinks a proposal repeats, while it waits for approval.
+function clefDupeTips(t) {
+  const tips = clefDupeItems(t);
+  return tips.map((s) => h("div", { class: "clef-tip", "data-clef": s.of },
+    h("span", { class: "clef-say" }, "Clef: may repeat ", clefRef(s.of), `, ${pct(s.p)}`),
+    h("span", { class: "t", title: get(s.of).title }, get(s.of).title),
+    h("span", { class: "clef-acts" },
+      h("button", { class: "ghost", title: "Clef will not flag it again for this proposal", onclick: () => dismissClef("dupes", t.id, s.of) }, "Dismiss"))));
 }
 
 // What the agent was told, as the panel and the toasts say it.
@@ -2691,10 +2822,17 @@ const ops = {
     }
     out.id = t.id;
   },
-  remove: (id) => (b) => {
+  // With `instead`, the tasks that depended on the removed one depend on that task: a rejected repeat leaves its
+  // dependents waiting for the task it repeated, not for nothing. A dependency that would make a cycle is dropped.
+  remove: (id, instead = null) => (b) => {
     mustFind(b, id);
     b.tasks = b.tasks.filter((t) => !same(t.id, id));
-    for (const t of b.tasks) t.deps = t.deps.filter((d) => !same(d, id));
+    const other = instead && b.tasks.find((t) => same(t.id, instead));
+    for (const t of b.tasks) {
+      const had = t.deps.some((d) => same(d, id));
+      t.deps = t.deps.filter((d) => !same(d, id));
+      if (had && other && !same(t.id, other.id) && !t.deps.some((d) => same(d, other.id)) && !reaches(b, other.id, t.id)) t.deps.push(other.id);
+    }
   },
   // The manual graph layout shows cards in file order, so moving a card moves its task in the list.
   move: (id, group, before, after) => (b) => {
@@ -2973,7 +3111,7 @@ function fillCard(el, t) {
   el.setAttribute("role", "option");
   el.setAttribute("aria-label", cardLabel(t, vs, unmet(t), waitsForAgent(t)));
   el.replaceChildren(...compact(
-    h("div", { class: "card-head" }, h("span", { class: "cid" }, t.id), h("span", { class: "head-end" }, yoloTag(t), h("span", { class: "badge", title: waitsForAgent(t) ? agentWait(t) : null }, asking ? "Waiting for you" : waitsForAgent(t) ? "Waiting for agent" : LABEL[vs]))),
+    h("div", { class: "card-head" }, h("span", { class: "cid" }, t.id), h("span", { class: "head-end" }, clefAlert(t), yoloTag(t), h("span", { class: "badge", title: waitsForAgent(t) ? agentWait(t) : null }, asking ? "Waiting for you" : waitsForAgent(t) ? "Waiting for agent" : LABEL[vs]))),
     h("div", { class: "card-title", title: t.title }, t.title),
     cardFoot(t),
     store.readOnly ? null : h("div", { class: "handle in", title: "Drag onto another card: this card will depend on that one" }),
@@ -4004,7 +4142,8 @@ async function startYolo(t, mode) {
     ], { ok: "OK", cancel: null });
     return;
   }
-  if (!prefs.skipYoloWarning) {
+  const clefTasks = [...openBefore(t), t].filter((x) => x.state !== "done" && clefPending(x));
+  if (!prefs.skipYoloWarning || clefTasks.length) {
     const before = openBefore(t), inner = before.filter((x) => x.yolo).map((x) => x.id);
     const stops = before.filter(yoloStop).map((x) => x.id), agents = before.length - stops.length;
     const count = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
@@ -4018,6 +4157,8 @@ async function startYolo(t, mode) {
       h("input", { type: "radio", name: "mode", value, checked: value === mode }), icon(ic), h("span", {}, h("b", {}, title), text));
     const data = await modal(`YOLO up to ${t.id}?`, [
       h("p", {}, `${lead}${inner.length ? ` This takes over the YOLO on ${names(inner)}.` : ""}${effects.length ? ` This ${effects.join(" and ")} now.` : ""}`),
+      clefTasks.length ? h("p", { class: "clef-warn" }, `${clefTasks.length === 1 ? "A task" : `${clefTasks.length} tasks`} of this chain ${clefTasks.length === 1 ? "has" : "have"} Clef suggestions you have not reviewed: `,
+        clefTasks.map((x, i) => [i ? ", " : "", clefRef(x.id)]), ". A missing dependency there can make agents work in the wrong order.") : null,
       before.length ? h("div", { class: "yolo-choices", role: "radiogroup", "aria-label": `YOLO at ${t.id}` },
         choice("on", "zap", `Do ${t.id} too`, "Then it comes to you for review."),
         choice("before", "stop", `Stop before ${t.id}`, "Agents wait for you before starting it.")) : null,
@@ -4203,6 +4344,7 @@ function fillPanel(panel, t) {
     h("div", { class: "p-body" },
       title,
       nowCard(t, vs, ro, top),
+      clefDupeTips(t),
       desc ? h("section", { class: "p-sec" },
         t.desc || ui.editingDesc ? h("div", { class: "section-head" }, "Description",
           checks.length ? [h("span", { class: "lane-bar", title: `${done} of ${checks.length} checked` }, h("i", { style: `width:${(100 * done) / checks.length}%` })), h("span", { class: "count" }, `${done}/${checks.length}`)] : null,
@@ -4214,7 +4356,8 @@ function fillPanel(panel, t) {
         t.deps.length || kids.length ? h("div", { class: "rel" },
           t.deps.length ? [h("div", { class: "rel-label" }, "Blocked by"), t.deps.map((d) => depRow(d, () => unlink(t.id, d)))] : null,
           kids.length ? [h("div", { class: "rel-label" }, "Blocks"), kids.map((k) => depRow(k.id))] : null)
-          : h("div", { class: "empty-line" }, "None yet.")),
+          : h("div", { class: "empty-line" }, "None yet."),
+        clefDepTips(t), clefOrderTips(t)),
       h("section", { class: "p-sec" },
         h("div", { class: "section-head" }, top && top === last && earlier.length ? "Earlier notes" : "Notes", earlier.length ? h("span", { class: "count" }, earlier.length) : null),
         earlier.length ? h("div", { class: "notes" }, earlier.map((n) => noteEl(t, n, ro)))
@@ -4304,6 +4447,8 @@ function nowCard(t, vs, ro, note) {
       ? h("span", {}, `Nobody works on it yet. ${agentWait(t)}`, agents.sessions.length || agents.launch ? [" Send it: ", sendButtons(t)] : null)
       : h("span", {}, "You started it. An agent you tell to ", say(), " takes it over.", agents.sessions.length ? [" Or send it: ", sendButtons(t)] : null)) : null,
     ro ? null : deliveryHint(t),
+    !ro && ["proposed", "todo", "blocked"].includes(vs) && clefPending(t) ? h("div", { class: "now-hint clef-warn" }, h("span", {},
+      `${clefWord(clefPending(t))} for this task wait below: add or dismiss ${clefPending(t) === 1 ? "it" : "them"} before work starts.`)) : null,
     !ro && vs === "doing" && !mine && idleDays(t) != null ? h("div", { class: "now-hint idle" }, h("span", {},
       `Nothing happened on it for ${idleDays(t)} day${idleDays(t) === 1 ? "" : "s"}. If nobody works on it any more, pause it, then start it or send it to an agent.`)) : null,
     yolo,
@@ -4427,13 +4572,19 @@ async function copy(text) {
 
 async function removeTask(t) {
   const kids = dependents(t);
+  // A proposal Clef says repeats another task: what waited for it should wait for that task instead.
+  const repeat = kids.length ? clefDupeItems(t).map((s) => ({ ...s, task: get(s.of) })).find((s) => s.task) : null;
+  const names = kids.map((k) => k.id).join(", ");
   const data = await modal(`Delete ${t.id}?`, [
-    h("p", {}, keyLabel(`"${t.title}" will be removed${kids.length ? `, along with the dependency from ${kids.map((k) => k.id).join(", ")}` : ""}. Ctrl+Z brings it back.`)),
+    h("p", {}, keyLabel(`"${t.title}" will be removed${kids.length ? `, along with the dependency from ${names}` : ""}. Ctrl+Z brings it back.`)),
+    repeat ? h("label", { class: "check clef-rewire" }, h("input", { type: "checkbox", name: "rewire", checked: true }),
+      `Make ${names} depend on ${repeat.task.id} "${repeat.task.title}" instead: Clef says ${t.id} repeats it (${pct(repeat.p)}).`) : null,
     t.state === "proposed" ? h("p", {}, "The agent is not told why. To have it revise the proposal, ask for changes.") : null,
   ], { ok: "Delete", danger: true });
   if (!data) return;
   if (same(ui.selected, t.id)) ui.selected = null;
-  undoable(ops.remove(t.id), `${t.state === "proposed" ? "Rejected" : "Deleted"} ${t.id}`);
+  const instead = repeat && data.get("rewire") ? repeat.task.id : null;
+  undoable(ops.remove(t.id, instead), `${t.state === "proposed" ? "Rejected" : "Deleted"} ${t.id}${instead ? `; ${names} now wait for ${instead}` : ""}`);
 }
 
 async function sendBack(t, text = "") {

@@ -12,11 +12,14 @@ Python 3.8+, standard library only. Run `python kanvas.py -h` for commands.
 
 import argparse
 import base64
+import collections
 import errno
+import fnmatch
 import hashlib
 import ipaddress
 import json
 import os
+import queue
 import re
 import shutil
 import socket
@@ -2429,6 +2432,80 @@ def record_delivery(board_path, session, kind, task, title, text=None, status="p
     return d
 
 
+# What Clef suggested about a board's tasks lives in the user's state folder, next to its agent sessions, never in the
+# board: {use: {TASK: {"at", "items"}}, "dismissed": {use: {TASK: [what the human dismissed]}}}. The board shows only
+# suggestions that still make sense for the board as it is now.
+CLEF_USES = ("deps", "dupes", "order")
+
+
+def clef_store_path(board_path):
+    return os.path.join(agents_dir(board_path), "clef.json")
+
+
+def clef_store(board_path):
+    store = _read_json_file(clef_store_path(board_path)) or {}
+    for key in CLEF_USES + ("dismissed",):
+        if not isinstance(store.get(key), dict):
+            store[key] = {}
+    for use in CLEF_USES:
+        if not isinstance(store["dismissed"].get(use), dict):
+            store["dismissed"][use] = {}
+    return store
+
+
+def clef_store_update(board_path, fn):
+    path = clef_store_path(board_path)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with locked(path):
+        store = clef_store(board_path)
+        fn(store)
+        _write_json_file(path, store)
+        return store
+
+
+def clef_dismissed(store, use, tid):
+    return {str(x).upper() for x in store["dismissed"][use].get(str(tid).upper(), [])}
+
+
+def clef_dismiss(board_path, use, tid, item):
+    """The human dismissed a suggestion: it never shows again for this task."""
+    if use not in CLEF_USES:
+        raise KanvasError(f"Unknown Clef use {use!r}")
+    if not isinstance(tid, str) or not isinstance(item, str) or not tid.strip() or not item.strip() or len(tid) > 64 or len(item) > 64:
+        raise KanvasError("Expected the task and the suggestion to dismiss")
+
+    def fn(store):
+        kept = store["dismissed"][use].setdefault(tid.strip().upper(), [])
+        if item.strip().upper() not in {str(x).upper() for x in kept}:
+            kept.append(item.strip().upper())
+    return clef_store_update(board_path, fn)
+
+
+def clef_view(board_path, board):
+    """What the board shows of Clef's suggestions: only those still possible on the board as it is, and not dismissed."""
+    store = clef_store(board_path)
+    tasks = task_map(board)
+    view = {}
+    for use, (candidates_of, _, _, key) in CLEF_PAIRS.items():
+        view[use] = {}
+        for tid, entry in store[use].items():
+            t = tasks.get(str(tid).upper())
+            # Dependencies matter until the task is done; a repeat, until the proposal is approved or rejected; a clash,
+            # while the approved task is not done.
+            if not t or not isinstance(entry, dict):
+                continue
+            if {"deps": t.get("state") == "done", "dupes": t.get("state") != "proposed",
+                    "order": t.get("state") in ("done", "proposed")}[use]:
+                continue
+            open_ = {c["id"].upper(): c["id"] for c in candidates_of(board, t)}
+            gone = clef_dismissed(store, use, tid)
+            items = [{key: open_[str(i.get(key)).upper()], "p": i.get("p")} for i in entry.get("items") or []
+                     if isinstance(i, dict) and str(i.get(key)).upper() in open_ and str(i.get(key)).upper() not in gone]
+            if items:
+                view[use][t["id"]] = items
+    return view
+
+
 # What the human did in the board, found by comparing the board before and after a save from the browser. Every
 # button is covered this way, without wiring each one. Agents change the board through the CLI, which tells nobody.
 EVENT_LABELS = {
@@ -3436,6 +3513,502 @@ def cmd_codex(args):
     CodexBridge(path, args.label or f"Codex · {folder}", args.server, args.thread, agent=getattr(args, "as_name", None)).run()
 
 
+# ---------------------------------------------------------------------------
+# Clef: Cloudflare's decision model answers small questions about the board
+# ---------------------------------------------------------------------------
+#
+# Opt-in. Nothing leaves this computer unless the Kanvas server runs with KANVAS_CLEF=1 and both Cloudflare
+# credentials (CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_API_TOKEN) in its environment. The credentials stay in memory: never in
+# the board, the page or the state folder. Calls run on a thread of their own with a timeout, so a save never waits for
+# Clef, and a failed call is logged and dropped: the feature just stays quiet. KANVAS_CLEF_FAKE names a JSON table a
+# FakeClef answers from instead, for tests; it sends nothing.
+#
+# A call is a "state" (text or JSON about the board) and 1 to 64 questions. Kanvas asks only "noul" questions: how
+# likely the answer is yes. Clef also takes "choice" and "score" questions, which Kanvas does not use.
+
+CLEF_URL = "https://api.cloudflare.com/client/v4/accounts/{account}/ai/run/@cf/cloudflare/clef"
+CLEF_TIMEOUT = 10.0             # seconds for one call; Clef usually answers in about 0.2 s
+CLEF_MAX_QUESTIONS = 64
+# How sure Clef must be before the board shows a suggestion, per use. Measured on the labelled cases on 2026-11-20:
+# at these, every dependency suggestion but one in 21 and every duplicate flag was right (docs/clef-viability.md).
+CLEF_THRESHOLDS = {"deps": 0.6, "dupes": 0.7, "order": 0.6}
+CLEF_PRICE = 0.24               # US dollars per million input tokens; output is free
+CLEF_CREDENTIALS = ("CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN")
+
+
+class ClefError(Exception):
+    """Clef gave no usable answer: a question it does not take, no connection, an error or an answer Kanvas cannot
+    read. `retry` says whether trying again later may work (no connection, too many requests, a server error), as
+    opposed to credentials or a question Clef refuses."""
+
+    def __init__(self, message, retry=False):
+        super().__init__(message)
+        self.retry = retry
+
+
+def clef_check(state, questions):
+    """Raise ClefError unless Clef takes this call."""
+    if not isinstance(state, (str, dict, list)):
+        raise ClefError("The state must be text or JSON")
+    if not isinstance(questions, dict) or not 1 <= len(questions) <= CLEF_MAX_QUESTIONS:
+        n = len(questions) if isinstance(questions, dict) else "no"
+        raise ClefError(f"Clef takes 1 to {CLEF_MAX_QUESTIONS} questions per call, not {n}")
+    for qid, q in questions.items():
+        kind = q.get("type") if isinstance(q, dict) else None
+        if not isinstance(qid, str) or not qid:
+            raise ClefError("Every question needs an id")
+        if kind != "noul":
+            raise ClefError(f"Question {qid}: Kanvas asks only yes/no (noul) questions")
+        if not isinstance(q.get("instructions"), str) or not q["instructions"].strip():
+            raise ClefError(f"Question {qid}: the instructions are missing")
+
+
+def _unit(x):
+    x = float(x)
+    if x != x:  # NaN
+        raise ValueError("not a number")
+    return min(1.0, max(0.0, x))
+
+
+def _clef_answer(q, a):
+    """One answer as the uses read it: {"type": "noul", "p": the probability of yes}."""
+    return {"type": "noul", "p": _unit(a["noul"])}
+
+
+def clef_answers(response, questions):
+    """({question id: answer}, usage) from Clef's response, with Cloudflare's {"result": ...} envelope or without.
+    A question with no answer, or one Kanvas cannot read, is left out; a response with no answers raises ClefError."""
+    if not isinstance(response, dict):
+        raise ClefError("Clef's answer is not a JSON object")
+    if response.get("success") is False:
+        errors = response.get("errors") or []
+        first = errors[0] if errors and isinstance(errors[0], dict) else {}
+        raise ClefError(f"Clef refused the call: {str(first.get('message') or 'no reason given')[:200]}")
+    body = response["result"] if isinstance(response.get("result"), dict) else response
+    if not isinstance(body.get("answers"), dict):
+        raise ClefError("Clef's answer has no answers")
+    out = {}
+    for qid, q in questions.items():
+        a = body["answers"].get(qid)
+        if isinstance(a, dict):
+            try:
+                out[qid] = _clef_answer(q, a)
+            except (KeyError, TypeError, ValueError):
+                continue
+    usage = body.get("usage") if isinstance(body.get("usage"), dict) else {}
+    return out, usage
+
+
+def clef_tokens(state, questions):
+    """A rough count of the input tokens of a call, for when Clef reports none: one per 2.25 characters, as Clef
+    counted the calls Kanvas makes (2026-11-20, within 10 %)."""
+    return len(json.dumps({"state": state, "questions": questions}, ensure_ascii=False)) * 4 // 9 + 1
+
+
+def clef_input_tokens(usage):
+    for key in ("prompt_tokens", "input_tokens"):
+        if isinstance(usage.get(key), (int, float)):
+            return int(usage[key])
+    return None
+
+
+# python.org's Python for macOS ships without CA certificates, so it cannot check Cloudflare's.
+CLEF_NO_CERTIFICATES = (". If this Python has no CA certificates (python.org's Python on macOS), start Kanvas with "
+                        "SSL_CERT_FILE=/etc/ssl/cert.pem, or run \"Install Certificates.command\" in its folder in Applications")
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Never follow a redirect: it would carry the API token to another address."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+class ClefClient:
+    """Asks Cloudflare's Clef. Made by clef_from_env only when the human opted in; `url` is for tests."""
+
+    def __init__(self, account, token, timeout=CLEF_TIMEOUT, url=None):
+        self.url = url or CLEF_URL.format(account=quote(account, safe=""))
+        self._token = token
+        self.timeout = timeout
+        self.opener = urllib.request.build_opener(_NoRedirect)
+
+    def __repr__(self):
+        return f"ClefClient({self.url!r})"  # never the token
+
+    def request(self, state, questions):
+        """The HTTP request for one call, not sent yet."""
+        clef_check(state, questions)
+        body = json.dumps({"model": "clef", "state": state, "questions": questions}, ensure_ascii=False).encode("utf-8")
+        return urllib.request.Request(self.url, data=body, method="POST", headers={
+            "Authorization": f"Bearer {self._token}", "Content-Type": "application/json", "Accept": "application/json"})
+
+    def ask(self, state, questions):
+        """{"answers", "usage", "seconds"} for one call, or ClefError."""
+        req = self.request(state, questions)
+        start = time.monotonic()
+        try:
+            with self.opener.open(req, timeout=self.timeout) as r:
+                raw = r.read(MAX_UPLOAD)
+        except urllib.error.HTTPError as e:
+            reason = f"HTTP {e.code} {e.reason}"
+            try:
+                first = (json.loads(e.read(65536).decode("utf-8")).get("errors") or [{}])[0]
+                if first.get("message"):
+                    reason += f": {str(first['message'])[:200]}"
+            except (AttributeError, IndexError, OSError, TypeError, ValueError):
+                pass
+            finally:
+                e.close()
+            raise ClefError(f"Clef answered {reason}", retry=e.code == 429 or e.code >= 500) from None
+        except (urllib.error.URLError, OSError) as e:
+            reason = str(getattr(e, "reason", e))
+            certificates = "CERTIFICATE_VERIFY_FAILED" in reason
+            if certificates:
+                reason += CLEF_NO_CERTIFICATES
+            raise ClefError(f"Could not reach Clef: {reason}", retry=not certificates) from None
+        try:
+            response = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError):
+            raise ClefError("Clef's answer is not JSON") from None
+        answers, usage = clef_answers(response, questions)
+        return {"answers": answers, "usage": usage, "seconds": time.monotonic() - start}
+
+
+class FakeClef:
+    """Answers from a table instead of asking Cloudflare, for tests: nothing leaves the computer. `table` maps question
+    ids, or fnmatch patterns of them, to answers in Clef's own shape or to functions of (state, question) that return
+    one; `rules` are (pattern, text the state must contain or None, answer), tried before the table. Questions nothing
+    matches get `default`, or no answer."""
+
+    def __init__(self, table=None, default=None, rules=(), delay=0.0, fail=None):
+        self.rules = list(rules) + [(k, None, v) for k, v in (table or {}).items()]
+        self.default = default
+        self.delay = delay
+        self.fail = fail
+        self.calls = []
+        self.lock = threading.Lock()
+
+    @classmethod
+    def from_file(cls, path):
+        """A FakeClef from a JSON file: {"answers": {pattern: answer}, "rules": [{"question", "state", "answer"}],
+        "default": answer, "delay": seconds, "fail": message}."""
+        try:
+            spec = json.loads(read_text_file(path))
+        except (OSError, ValueError) as e:
+            raise ClefError(f"Cannot read the fake Clef table {path}: {e}") from None
+        if not isinstance(spec, dict):
+            raise ClefError(f"The fake Clef table {path} must be a JSON object")
+        rules = [(r.get("question", "*"), r.get("state"), r.get("answer")) for r in spec.get("rules") or [] if isinstance(r, dict)]
+        return cls(spec.get("answers"), spec.get("default"), rules, float(spec.get("delay") or 0), spec.get("fail"))
+
+    def answer(self, state, qid, q):
+        text = state if isinstance(state, str) else json.dumps(state, ensure_ascii=False)
+        for pattern, needs, a in self.rules:
+            if (pattern == qid or fnmatch.fnmatchcase(qid, pattern)) and (needs is None or needs in text):
+                break
+        else:
+            a = self.default
+        return a(state, q) if callable(a) else a
+
+    def ask(self, state, questions):
+        clef_check(state, questions)
+        with self.lock:
+            self.calls.append({"state": state, "questions": questions})
+        if self.delay:
+            time.sleep(self.delay)
+        if self.fail:
+            raise ClefError(self.fail)
+        answers = {}
+        for qid, q in questions.items():
+            a = self.answer(state, qid, q)
+            if a is not None:
+                answers[qid] = a
+        response = {"result": {"answers": answers, "usage": {"prompt_tokens": clef_tokens(state, questions)}}, "success": True}
+        answers, usage = clef_answers(response, questions)
+        return {"answers": answers, "usage": usage, "seconds": self.delay}
+
+
+def clef_from_env(env=None):
+    """The Clef Kanvas may ask, or None. Only with KANVAS_CLEF=1 and both Cloudflare credentials set does anything
+    leave this computer; KANVAS_CLEF_FAKE, the path of a JSON table, gives a FakeClef instead."""
+    env = os.environ if env is None else env
+    if env.get("KANVAS_CLEF_FAKE"):
+        return FakeClef.from_file(env["KANVAS_CLEF_FAKE"])
+    if env.get("KANVAS_CLEF", "").strip() != "1":
+        return None
+    account, token = (env.get(k, "").strip() for k in CLEF_CREDENTIALS)
+    if not account or not token:
+        return None
+    return ClefClient(account, token)
+
+
+def clef_missing(env=None):
+    """The credentials still missing when KANVAS_CLEF=1 asks for Clef, so `serve` can say why it stays off."""
+    env = os.environ if env is None else env
+    if env.get("KANVAS_CLEF", "").strip() != "1" or env.get("KANVAS_CLEF_FAKE"):
+        return []
+    return [k for k in CLEF_CREDENTIALS if not env.get(k, "").strip()]
+
+
+class ClefWorker:
+    """Asks Clef on threads of its own, so saves never wait for it. A newer question about the same thing replaces one
+    still waiting, so a burst of changes queues at most one call per task and use, and nothing is dropped for being
+    late. A call that fails for a reason that may pass (no connection, too many requests, a server error) is tried
+    again a little later; any other failure is logged once per reason and dropped. A failure that means Clef cannot
+    work at all (credentials, certificates) turns Clef off until the server restarts, with one message saying why."""
+
+    THREADS = 3
+    RETRIES = (2.0, 8.0)        # seconds before the second and third tries
+    FATAL = ("HTTP 401", "HTTP 403", "HTTP 404", "CERTIFICATE_VERIFY_FAILED")
+
+    def __init__(self, clef, log=None, threads=THREADS, retries=RETRIES):
+        self.clef = clef
+        self.log = log or (lambda msg: print(msg, file=sys.stderr, flush=True))
+        self.retries = retries
+        self.logged = set()
+        self.lock = threading.Condition()
+        self.order = collections.deque()  # keys of waiting jobs, oldest first
+        self.waiting = {}                 # key -> job; a newer submit with the same key replaces the job
+        self.busy = 0                     # jobs waiting or running
+        self.off = None                   # why Clef was turned off, if it was
+        self.stopping = False
+        self.threads = [threading.Thread(target=self._run, name=f"kanvas-clef-{i}", daemon=True) for i in range(threads)]
+        for t in self.threads:
+            t.start()
+
+    def _say(self, msg, reason=None):
+        key = reason or msg
+        if key not in self.logged:
+            self.logged.add(key)
+            self.log(msg)
+
+    def submit(self, state, questions, done, what="Clef", failed=None, key=None):
+        """Queue a call; `done(reply)` runs on a worker thread with the answers, or `failed(reason)` when there are
+        none. A call with the `key` of one still waiting takes its place. False, after `failed`, once Clef is off."""
+        with self.lock:
+            if self.off:
+                if failed:
+                    failed(self.off)
+                return False
+            key = key if key is not None else object()
+            if key not in self.waiting:
+                self.order.append(key)
+                self.busy += 1
+            self.waiting[key] = (state, questions, done, what, failed)
+            self.lock.notify()
+        return True
+
+    def _next(self):
+        with self.lock:
+            while not self.order and not self.stopping:
+                self.lock.wait()
+            if self.stopping:
+                return None
+            key = self.order.popleft()
+            return self.waiting.pop(key)
+
+    def _ask(self, state, questions):
+        for wait in tuple(self.retries) + (None,):
+            try:
+                return self.clef.ask(state, questions)
+            except ClefError as e:
+                if not getattr(e, "retry", False) or wait is None or self.off:
+                    raise
+                time.sleep(wait)
+
+    def _run(self):
+        while True:
+            job = self._next()
+            if job is None:
+                return
+            state, questions, done, what, failed = job
+            try:
+                if self.off:
+                    raise ClefError(self.off)
+                done(self._ask(state, questions))
+            except Exception as e:  # a use's bug must not stop the worker for the others
+                reason = str(e) if isinstance(e, ClefError) else f"{type(e).__name__}: {e}"
+                if isinstance(e, ClefError) and not self.off and any(f in reason for f in self.FATAL):
+                    self.off = reason
+                    self.log(f"Clef is off until Kanvas restarts: {reason}")
+                elif not self.off:
+                    self._say(f"{what}: {reason}", reason)
+                try:
+                    if failed:
+                        failed(reason)
+                except Exception as e2:
+                    self._say(f"{what}: {type(e2).__name__}: {e2}")
+            finally:
+                with self.lock:
+                    self.busy -= 1
+                    self.lock.notify_all()
+
+    def check(self, done=None):
+        """Ask Clef one small question to see that it answers; `done(ok, message)` afterwards."""
+        def answered(reply):
+            if done:
+                done(True, f"Clef answers ({reply.get('seconds', 0):.1f} s).")
+
+        def refused(reason):
+            if done:
+                done(False, f"Clef does not answer: {reason}")
+        self.submit("A task board.", {"check": {"type": "noul", "instructions": "Is this about a task board?"}},
+                    answered, "Clef check", refused, key="check")
+
+    def wait(self, timeout=10):
+        """Wait until every queued call has been answered or dropped; False on timeout."""
+        deadline = time.monotonic() + timeout
+        with self.lock:
+            while self.busy:
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    return False
+                self.lock.wait(left)
+        return True
+
+    def stop(self):
+        with self.lock:
+            self.stopping = True
+            self.lock.notify_all()
+
+
+# What Kanvas asks Clef, use by use. Each use builds its calls from the board alone, (state, questions) pairs, and reads
+# the answers back with a threshold, so tests/clef_eval.py measures exactly what the board asks.
+
+def _clip(text, limit):
+    text = " ".join(str(text or "").split())
+    return text if len(text) <= limit else text[:limit - 1].rstrip() + "…"
+
+
+def clef_task_text(task, desc_limit=600):
+    """A task as Clef reads it: ID, title, state and description."""
+    head = f"{task['id']} \"{task['title']}\" ({task.get('state', 'todo')})"
+    desc = _clip(task.get("desc"), desc_limit)
+    return f"{head}: {desc}" if desc else head
+
+
+def _board_head(board):
+    return f"A task board shared by a human and AI agents{': ' + _clip(board.get('title'), 120) if board.get('title') else ''}."
+
+
+def _chunks(items, size=CLEF_MAX_QUESTIONS):
+    return [items[i:i + size] for i in range(0, len(items), size)]
+
+
+# Dependencies: whether a task needs the result of another unfinished task it does not depend on yet.
+def clef_dep_candidates(board, task):
+    """The unfinished tasks `task` could still be made to wait for: not itself, not what it already waits for directly
+    or through others, and not what waits for it (that would be a cycle)."""
+    tasks = task_map(board)
+    me = task["id"].upper()
+    upstream = _upstream(tasks, task)
+    return [t for t in board["tasks"] if t["id"].upper() != me and t.get("state") != "done"
+            and t["id"].upper() not in upstream and me not in _upstream(tasks, t)]
+
+
+def clef_dep_calls(board, task, candidates=None):
+    """[(state, questions)]: does `task` need each candidate's result first? One yes/no per candidate, 64 per call."""
+    candidates = clef_dep_candidates(board, task) if candidates is None else candidates
+    calls = []
+    # What the task already waits for goes along: a candidate that gives the same result as one of them (a repeated
+    # task, a copy in another group) is not missing.
+    tasks = task_map(board)
+    have = [tasks[d.upper()] for d in task.get("deps", []) if d.upper() in tasks]
+    already = ("It already depends on:\n" + "\n".join(f"- {clef_task_text(d, 240)}" for d in have) + "\n") if have else ""
+    for chunk in _chunks(candidates):
+        state = (f"{_board_head(board)}\nThe task being planned:\n{clef_task_text(task)}\n{already}"
+                 f"Other unfinished tasks on the board:\n" + "\n".join(f"- {clef_task_text(c, 240)}" for c in chunk))
+        questions = {f"needs:{c['id']}": {"type": "noul", "instructions":
+                     f"Does {task['id']} need the result of {c['id']} first? Yes only when {task['id']} cannot be done, "
+                     f"or not done well, until {c['id']} is done: it builds on, uses, tests or ships what {c['id']} makes, "
+                     f"for example data in the form {c['id']} gives it. "
+                     "No when they are merely related, touch the same area, or could happen in either order, and no "
+                     f"when {task['id']} already depends on a task that gives the same result as {c['id']}."}
+                     for c in chunk}
+        calls.append((state, questions))
+    return calls
+
+
+def _noul_hits(answers, prefix, threshold):
+    hits = [(qid[len(prefix):], a["p"]) for qid, a in answers.items()
+            if qid.startswith(prefix) and a.get("type") == "noul" and a["p"] >= threshold]
+    return sorted(hits, key=lambda h: (-h[1], h[0]))
+
+
+def clef_dep_readings(answers, threshold=CLEF_THRESHOLDS["deps"]):
+    """[{"on": ID, "p"}] for the candidates Clef thinks the task needs first, surest first."""
+    return [{"on": tid, "p": p} for tid, p in _noul_hits(answers, "needs:", threshold)]
+
+
+# Duplicates: whether a new proposal repeats a task already on the board.
+def clef_dupe_candidates(board, task):
+    return [t for t in board["tasks"] if t["id"].upper() != task["id"].upper()]
+
+
+def clef_dupe_calls(board, task, candidates=None):
+    """[(state, questions)]: does the proposal `task` repeat each other task? One yes/no per task, 64 per call."""
+    candidates = clef_dupe_candidates(board, task) if candidates is None else candidates
+    calls = []
+    for chunk in _chunks(candidates):
+        state = (f"{_board_head(board)}\nA new proposal:\n{clef_task_text(task)}\n"
+                 f"Tasks already on the board:\n" + "\n".join(f"- {clef_task_text(c, 240)}" for c in chunk))
+        questions = {f"repeats:{c['id']}": {"type": "noul", "instructions":
+                     f"Does the proposal {task['id']} repeat {c['id']}: would doing both mean doing the same work twice, "
+                     f"even in other words? Yes also when the proposal is already part of {c['id']}. "
+                     "No when they only touch the same area, or one builds on the other."}
+                     for c in chunk}
+        calls.append((state, questions))
+    return calls
+
+
+def clef_dupe_readings(answers, threshold=CLEF_THRESHOLDS["dupes"]):
+    """[{"of": ID, "p"}] for the tasks Clef thinks the proposal repeats, surest first."""
+    return [{"of": tid, "p": p} for tid, p in _noul_hits(answers, "repeats:", threshold)]
+
+
+# Order: whether two tasks that agents may work on at the same time would change the same part of the code. They then
+# get in each other's way (or wait for each other), so the human decides which goes
+# first, by adding a dependency.
+def clef_order_candidates(board, task):
+    """The approved tasks in progress or ready to start that `task` is not ordered with yet: neither waits for the
+    other, directly or through others."""
+    tasks = task_map(board)
+    me = task["id"].upper()
+    upstream = _upstream(tasks, task)
+    return [t for t in board["tasks"] if t["id"].upper() != me and view_state(t, tasks) in ("todo", "doing")
+            and t["id"].upper() not in upstream and me not in _upstream(tasks, t)]
+
+
+def clef_order_calls(board, task, candidates=None):
+    """[(state, questions)]: would `task` and each candidate change the same part of the code? 64 per call."""
+    candidates = clef_order_candidates(board, task) if candidates is None else candidates
+    calls = []
+    for chunk in _chunks(candidates):
+        state = (f"{_board_head(board)} Agents work on tasks side by side, each on its own copy of the code, and the "
+                 f"copies are merged afterwards.\nThe task:\n{clef_task_text(task)}\n"
+                 f"Tasks in progress or ready to start:\n" + "\n".join(f"- {clef_task_text(c, 240)}" for c in chunk))
+        questions = {f"clash:{c['id']}": {"type": "noul", "instructions":
+                     f"Would {task['id']} and {c['id']} change the same part of the code (the same screen, component, "
+                     f"file section or function), so that doing both at the same time makes their changes collide? "
+                     "Yes when both rework the same thing. No when they change different parts, or one only adds "
+                     "something next to the other."}
+                     for c in chunk}
+        calls.append((state, questions))
+    return calls
+
+
+def clef_order_readings(answers, threshold=CLEF_THRESHOLDS["order"]):
+    """[{"with": ID, "p"}] for the tasks Clef thinks would collide with the task, surest first."""
+    return [{"with": tid, "p": p} for tid, p in _noul_hits(answers, "clash:", threshold)]
+
+
+# The uses that ask a yes/no question per other task: (candidates, calls, readings, the key naming the other task).
+CLEF_PAIRS = {"deps": (clef_dep_candidates, clef_dep_calls, clef_dep_readings, "on"),
+              "dupes": (clef_dupe_candidates, clef_dupe_calls, clef_dupe_readings, "of"),
+              "order": (clef_order_candidates, clef_order_calls, clef_order_readings, "with")}
+
+
 class BoardServer(ThreadingHTTPServer):
     """Serves every open board, each at /<name>/."""
 
@@ -3449,12 +4022,14 @@ class BoardServer(ThreadingHTTPServer):
             return
         super().handle_error(request, client_address)
 
-    def __init__(self, address, path=None, hosts=LOCAL_NAMES, quiet=False, share=None, remember=None):
+    def __init__(self, address, path=None, hosts=LOCAL_NAMES, quiet=False, share=None, remember=None, clef=None):
         """`hosts` are the names allowed in the Host header, or None for any. A server made with
         `share` serves the boards of that one and cannot open boards itself. With `remember`, a
-        file path, the open boards and whether phones may connect are kept there for the next start."""
+        file path, the open boards and whether phones may connect are kept there for the next start.
+        `clef`, from clef_from_env, is asked about the board's changes on a thread of its own."""
         # TCPServer.__init__ calls server_close when the port is busy, before the rest is set up.
         self.phone_listener = None
+        self.clef_worker = None
         super().__init__(address, BoardHandler)
         self.hosts = hosts
         self.quiet = quiet
@@ -3473,6 +4048,15 @@ class BoardServer(ThreadingHTTPServer):
         self.missing_boards = {}  # name -> first time the file was absent
         self.stop_at = None
         self.stopping = False
+        if clef is not None and share is None:
+            say = lambda msg: print(f"[{time.strftime('%H:%M:%S')}] {msg}", file=sys.stderr, flush=True)
+            self.clef_worker = ClefWorker(clef, log=say)
+            # Credentials and the connection are checked once at the start, so a mistake shows at once, not on the
+            # first change to a board.
+            if not isinstance(clef, FakeClef):
+                self.clef_worker.check(lambda ok, msg: say(msg if ok else msg + " Clef stays off until Kanvas restarts."))
+        self.clef_seen = {}    # board path -> (file signature, board), to notice changes whoever made them
+        self.clef_latest = {}  # (board path, use, TASK) -> the newest question asked, so older answers are dropped
         if path:
             self.add_board(path)
 
@@ -3535,7 +4119,92 @@ class BoardServer(ThreadingHTTPServer):
 
     def server_close(self):
         self._stop_phone()
+        if self.clef_worker:
+            self.clef_worker.stop()
+            self.clef_worker = None
         super().server_close()
+
+    def clef_watch(self):
+        """Compare each open board with the version seen last, whether the browser or an agent's CLI changed it, and
+        ask Clef about what changed. The first look at a board only remembers it."""
+        if self.clef_worker is None:
+            return
+        with self.boards_lock:
+            paths = list(self.boards.values())
+        for path in paths:
+            try:
+                st = os.stat(path)
+                sig = (st.st_mtime_ns, st.st_size, st.st_ino)
+                seen = self.clef_seen.get(path)
+                if seen and seen[0] == sig:
+                    continue
+                board = load_board(path)
+            except (KanvasError, OSError):
+                continue
+            self.clef_seen[path] = (sig, board)
+            if seen:
+                try:
+                    self.clef_changes(path, seen[1], board)
+                except (KanvasError, OSError) as e:
+                    print(f"Clef: {e}", file=sys.stderr, flush=True)
+
+    def clef_changes(self, path, old, new):
+        before, after = task_map(old), task_map(new)
+        for t in new["tasks"]:
+            o = before.get(t["id"].upper())
+            if t.get("state") == "done":
+                continue
+            created = o is None
+            approved = o is not None and o.get("state") == "proposed" and t.get("state") == "todo"
+            edited = o is not None and any(o.get(f) != t.get(f) for f in ("title", "desc", "deps"))
+            if created or approved or edited:
+                self.clef_pairs(path, new, t, "deps")
+            if t.get("state") == "proposed" and (created or o.get("state") != "proposed"):
+                self.clef_pairs(path, new, t, "dupes")
+            # A task that becomes ready or starts may collide with the others agents can work on now.
+            now = view_state(t, after)
+            if now in ("todo", "doing") and (created or edited or view_state(o, before) != now):
+                self.clef_pairs(path, new, t, "order")
+
+    def clef_ask(self, path, use, task, calls, finish):
+        """Ask every call about `task`, then `finish(answers)` with all the answers, unless a call failed or a newer
+        question about the same task came since: suggestions are replaced only by complete, current ones."""
+        key = (path, use, task["id"].upper())
+        token = object()
+        self.clef_latest[key] = token
+        merged, left, failed = {}, [len(calls)], []
+
+        def part(answers):
+            merged.update(answers)
+            left[0] -= 1
+            if not left[0] and not failed and self.clef_latest.get(key) is token:
+                finish(merged)
+
+        def fail(reason):
+            failed.append(reason)
+            part({})
+        what = {"deps": "Dependencies", "dupes": "Duplicates", "order": "Order"}[use]
+        for i, (state, questions) in enumerate(calls):
+            # A newer question about the same task takes the place of one still waiting for Clef.
+            self.clef_worker.submit(state, questions, lambda reply: part(reply["answers"]), f"{what} ({task['id']})", fail,
+                                    key=key + (i,))
+
+    def clef_pairs(self, path, board, task, use):
+        """Ask about `task` and each other task the use asks about ("deps": does it need that one first? "dupes": does
+        the proposal repeat it?), but the pairs the human dismissed; keep what Clef is sure enough of."""
+        candidates_of, calls_of, readings_of, _ = CLEF_PAIRS[use]
+        gone = clef_dismissed(clef_store(path), use, task["id"])
+        candidates = [c for c in candidates_of(board, task) if c["id"].upper() not in gone]
+        tid = task["id"].upper()
+
+        def finish(answers):
+            entry = {"at": now_iso(), "items": readings_of(answers, CLEF_THRESHOLDS[use])}
+            clef_store_update(path, lambda store: store[use].__setitem__(tid, entry))
+        if candidates:
+            self.clef_ask(path, use, task, calls_of(board, task, candidates), finish)
+        else:
+            self.clef_latest[(path, use, tid)] = None
+            finish({})
 
     def server_bind(self):
         # HTTPServer.server_bind looks up the host's full name with socket.getfqdn,
@@ -3588,6 +4257,7 @@ class BoardServer(ThreadingHTTPServer):
         """Notice deleted/moved boards even when no browser is polling."""
         if not self.opens_boards:
             return
+        self.clef_watch()
         now = time.monotonic()
         with self.boards_lock:
             for name, path in list(self.boards.items()):
@@ -3818,6 +4488,8 @@ class BoardHandler(BaseHTTPRequestHandler):
             # a new agent runs a command, so it stays with this computer.
             info = dict(agents_info(path), launch=bool(self.server.main.agent_command) and self._from_this_computer())
             return self._send(200, json.dumps(info, ensure_ascii=False).encode("utf-8"))
+        if rest == ["api", "clef"]:
+            return self._clef(path)
         if len(rest) == 2 and rest[0] == FILES_DIR:
             return self._image(path, f"{FILES_DIR}/{rest[1]}")
         return self._error(404, "Not found")
@@ -3879,6 +4551,35 @@ class BoardHandler(BaseHTTPRequestHandler):
             print(f"[{time.strftime('%H:%M:%S')}] {name}: sent {d['task']} to {d['label']}", flush=True)
         self._send(200, json.dumps({"delivery": d, "created": created}, ensure_ascii=False).encode("utf-8"))
 
+    def _clef(self, path):
+        """What Clef suggests for the board's tasks, or {"on": false} when Kanvas runs without Clef."""
+        if self.server.main.clef_worker is None:
+            return self._send(200, b'{"on": false}')
+        try:
+            view = clef_view(path, load_board(path))
+        except (KanvasError, OSError) as e:
+            return self._error(503, str(e))
+        view["on"] = True
+        return self._send(200, json.dumps(view, ensure_ascii=False).encode("utf-8"))
+
+    def _clef_dismiss(self, path):
+        """The human dismissed a suggestion: {"use", "task", "item"}."""
+        text = self._read_json()
+        if text is None:
+            return
+        try:
+            body = json.loads(text)
+            clef_dismiss(path, body.get("use"), body.get("task"), body.get("item"))
+        except ValueError:
+            return self._error(400, "Expected JSON")
+        except AttributeError:
+            return self._error(400, "Expected a JSON object")
+        except KanvasError as e:
+            return self._error(400, str(e))
+        except OSError as e:
+            return self._error(503, f"Could not keep the dismissal: {e}")
+        return self._clef(path)
+
     def _launch_agent(self, name, board):
         """Start a new agent for a task: {"task": ID}. Only from this computer, and only with --agent-command."""
         command = self.server.main.agent_command
@@ -3924,6 +4625,8 @@ class BoardHandler(BaseHTTPRequestHandler):
             return self._send_to_agent(parts[0], self.server.board_path(parts[0]))
         if parts[1:] == ["api", "agents", "launch"] and self.server.board_path(parts[0]) is not None:
             return self._launch_agent(parts[0], self.server.board_path(parts[0]))
+        if parts[1:] == ["api", "clef", "dismiss"] and self.server.board_path(parts[0]) is not None:
+            return self._clef_dismiss(self.server.board_path(parts[0]))
         if parts[1:] == ["api", "phone"] and self.server.board_path(parts[0]) is not None:
             if not self._may_manage():
                 return self._error(403, "Only the computer running Kanvas can open it to phones")
@@ -4050,14 +4753,15 @@ class BoardHandler(BaseHTTPRequestHandler):
         self._send(200, data, headers={"ETag": etag_of(data)})
 
 
-def start_server(path, host="127.0.0.1", port=DEFAULT_PORT, quiet=False, remember=None):
+def start_server(path, host="127.0.0.1", port=DEFAULT_PORT, quiet=False, remember=None, clef=None):
     """Serve the board at `path` (or none) on the first free port from `port` on. With `remember`,
-    the boards open last time come back first, and `phone_wanted` says whether phones could connect."""
+    the boards open last time come back first, and `phone_wanted` says whether phones could connect.
+    `clef`, from clef_from_env, is asked about the boards' changes."""
     hosts = LOCAL_NAMES if host in ("127.0.0.1", "localhost") else None
     last_error = None
     for p in range(port, min(port + 20, 65536)):  # never past the last port
         try:
-            server = BoardServer((host, p), None, hosts, quiet, remember=remember)
+            server = BoardServer((host, p), None, hosts, quiet, remember=remember, clef=clef)
             server.phone_wanted = server.restore() if remember else False
             if path:
                 server.add_board(path)
@@ -4248,7 +4952,11 @@ def cmd_serve(args):
         if not args.no_open:
             webbrowser.open(board_url)
         return
-    server = start_server(path, args.host, args.port, remember=state_file() if local else None)
+    try:
+        clef = clef_from_env()
+    except ClefError as e:
+        raise KanvasError(str(e))
+    server = start_server(path, args.host, args.port, remember=state_file() if local else None, clef=clef)
     if getattr(args, "agent_command", None):
         server.agent_command = args.agent_command
     if args.tailscale:
@@ -4276,6 +4984,13 @@ def cmd_serve(args):
     if server.phone:
         print_phone([f"{base}{name}/" if name else base for base in server.phone])
     print("Boards of other projects open here too: run `kanvas serve` in them.")
+    if isinstance(clef, FakeClef):
+        print("Clef: on, answering from the fake table in KANVAS_CLEF_FAKE; nothing leaves this computer.")
+    elif clef:
+        print("Clef: on, checking that it answers. The board's tasks go to Cloudflare's Clef, to suggest missing "
+              "dependencies and flag repeated proposals (KANVAS_CLEF=1).")
+    elif clef_missing():
+        print(f"Clef stays off: KANVAS_CLEF=1 also needs {' and '.join(clef_missing())}.")
     if not server.check_host:
         print("Warning: listening beyond localhost; anyone who can reach this port can edit the board.")
     if not args.no_open:

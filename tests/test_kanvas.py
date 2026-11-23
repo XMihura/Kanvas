@@ -29,6 +29,9 @@ import kanvas  # noqa: E402
 
 # The CLI processes the tests start inherit the environment; they must never reach a real board.
 os.environ.pop("KANVAS_BOARD", None)
+# Nor Cloudflare's Clef.
+for _var in ("KANVAS_CLEF", "KANVAS_CLEF_FAKE", "CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN"):
+    os.environ.pop(_var, None)
 # Nor the boards a real Kanvas remembers between runs.
 STATE_DIR = tempfile.mkdtemp(prefix="kanvas-state-")
 os.environ["KANVAS_STATE_DIR"] = STATE_DIR
@@ -4491,7 +4494,7 @@ class ServeWithoutBoardTests(unittest.TestCase):
                 self.made.return_value.server_close.assert_called_once_with()
                 self.made_patch.stop()
 
-    def real_server(self, path, host, port, remember=None):
+    def real_server(self, path, host, port, remember=None, clef=None):
         """A BoardServer that does not listen, whose phone listener is a stand-in."""
         with mock.patch.object(socketserver.TCPServer, "server_bind"), mock.patch.object(socketserver.TCPServer, "server_activate"):
             server = kanvas.BoardServer((host, port), path, quiet=True)

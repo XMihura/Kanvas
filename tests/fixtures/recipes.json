@@ -1,0 +1,275 @@
+{
+  "kanvas": 1,
+  "title": "Recipe book",
+  "groups": [
+    {
+      "id": "CO",
+      "name": "Core"
+    },
+    {
+      "id": "DA",
+      "name": "Data"
+    },
+    {
+      "id": "UI",
+      "name": "Interface"
+    },
+    {
+      "id": "QA",
+      "name": "Quality"
+    },
+    {
+      "id": "SH",
+      "name": "Share"
+    }
+  ],
+  "tasks": [
+    {
+      "id": "CO-01",
+      "title": "Project skeleton",
+      "state": "done",
+      "group": "CO",
+      "at": "2026-11-20T17:00:00Z",
+      "by": "human",
+      "desc": "index.html, style.css and app.js, loaded without a build step."
+    },
+    {
+      "id": "DA-01",
+      "title": "Recipe data file",
+      "state": "todo",
+      "group": "DA",
+      "at": "2026-11-20T17:00:00Z",
+      "by": "human",
+      "desc": "`recipes.json` with 6 recipes: name, tags (vegetarian, quick, dessert), ingredients as text, steps."
+    },
+    {
+      "id": "DA-02",
+      "title": "Load and list recipes",
+      "state": "todo",
+      "group": "DA",
+      "deps": ["CO-01", "DA-01"],
+      "at": "2026-11-20T17:00:00Z",
+      "by": "human",
+      "desc": "Fetch recipes.json and render one card per recipe: name and tags."
+    },
+    {
+      "id": "UI-01",
+      "title": "Recipe detail view",
+      "state": "todo",
+      "group": "UI",
+      "deps": ["DA-02"],
+      "at": "2026-11-20T17:00:00Z",
+      "by": "human",
+      "desc": "Clicking a card shows its ingredients and steps; a back link returns to the list."
+    },
+    {
+      "id": "UI-02",
+      "title": "Search box",
+      "state": "todo",
+      "group": "UI",
+      "deps": ["DA-02"],
+      "at": "2026-11-20T17:00:00Z",
+      "by": "human",
+      "desc": "Filter the list by name or ingredient as the user types."
+    },
+    {
+      "id": "UI-03",
+      "title": "Tag filter chips",
+      "state": "todo",
+      "group": "UI",
+      "deps": ["DA-02"],
+      "at": "2026-11-20T17:00:00Z",
+      "by": "human",
+      "desc": "Chips for vegetarian, quick and dessert; several can be on at once."
+    },
+    {
+      "id": "UI-04",
+      "title": "Dark mode",
+      "state": "todo",
+      "group": "UI",
+      "deps": ["CO-01"],
+      "at": "2026-11-20T17:00:00Z",
+      "by": "human",
+      "desc": "Follow prefers-color-scheme."
+    },
+    {
+      "id": "DA-03",
+      "title": "Favourites",
+      "state": "todo",
+      "group": "DA",
+      "deps": ["UI-01"],
+      "at": "2026-11-20T17:00:00Z",
+      "by": "human",
+      "desc": "A star on each recipe; favourites are kept in localStorage and can be listed alone."
+    },
+    {
+      "id": "DA-04",
+      "title": "Structured ingredient quantities",
+      "state": "todo",
+      "group": "DA",
+      "deps": ["DA-01"],
+      "at": "2026-11-20T17:00:00Z",
+      "by": "human",
+      "desc": "Each ingredient in recipes.json becomes {amount, unit, item} instead of text, so amounts can be computed."
+    },
+    {
+      "id": "DA-05",
+      "title": "Serving size scaler",
+      "state": "todo",
+      "group": "DA",
+      "deps": ["UI-01"],
+      "at": "2026-11-20T17:00:00Z",
+      "by": "human",
+      "desc": "Round amounts to two decimals."
+    },
+    {
+      "id": "UI-05",
+      "title": "Print-friendly recipe",
+      "state": "todo",
+      "group": "UI",
+      "deps": ["UI-01"],
+      "at": "2026-11-20T17:00:00Z",
+      "by": "human",
+      "desc": "A print stylesheet: only the open recipe, no header or controls."
+    },
+    {
+      "id": "UI-06",
+      "title": "Shopping list",
+      "state": "todo",
+      "group": "UI",
+      "deps": ["DA-02"],
+      "at": "2026-11-20T17:00:00Z",
+      "by": "human",
+      "desc": "Sort the list by item name."
+    },
+    {
+      "id": "QA-01",
+      "title": "Smoke check script",
+      "state": "todo",
+      "group": "QA",
+      "at": "2026-11-20T17:00:00Z",
+      "by": "human",
+      "desc": "`check.sh`: node --check on every script, and recipes.json parses and has the fields the app reads."
+    },
+    {
+      "id": "SH-01",
+      "title": "Share recipe with a friend",
+      "state": "todo",
+      "group": "SH",
+      "deps": ["UI-01"],
+      "at": "2026-11-20T17:00:00Z",
+      "by": "human",
+      "desc": "Copy the open recipe as plain text (title, ingredients, steps) so it can be pasted into a message or email. Adds a Share button to the recipe detail view."
+    },
+    {
+      "id": "SH-02",
+      "title": "Export recipes as JSON file",
+      "state": "todo",
+      "group": "SH",
+      "deps": ["DA-02"],
+      "at": "2026-11-20T17:00:00Z",
+      "by": "human",
+      "desc": "Let the user download the whole recipe collection as a single JSON file for backup or moving to another device. Builds on the recipe loading module."
+    },
+    {
+      "id": "SH-03",
+      "title": "Import recipes from JSON file",
+      "state": "todo",
+      "group": "SH",
+      "deps": ["DA-02", "SH-02"],
+      "at": "2026-11-20T17:00:00Z",
+      "by": "human",
+      "desc": "Load a previously exported JSON file back into the app, merging or replacing the current collection after user confirmation. Depends on the export format from SH-02."
+    },
+    {
+      "id": "SH-05",
+      "title": "Use the app offline",
+      "state": "todo",
+      "group": "SH",
+      "deps": ["CO-01"],
+      "at": "2026-11-20T17:00:00Z",
+      "by": "human",
+      "desc": "Verify and document that the whole recipe book works with no network when opened from disk or a local server, and fix anything that assumes connectivity. No service worker or external assets; everything stays local."
+    },
+    {
+      "id": "SH-06",
+      "title": "Accessibility pass",
+      "state": "todo",
+      "group": "SH",
+      "deps": ["UI-01", "UI-02", "UI-03"],
+      "at": "2026-11-20T17:00:00Z",
+      "by": "human",
+      "desc": "Keyboard navigation, ARIA labels, focus visibility and contrast checks across list, detail, search and filter views. Includes testing with a screen reader."
+    },
+    {
+      "id": "SH-08",
+      "title": "Automated test script",
+      "state": "todo",
+      "group": "SH",
+      "deps": ["QA-01", "DA-02"],
+      "at": "2026-11-20T17:00:00Z",
+      "by": "human",
+      "desc": "Plain script that checks core flows without network or dependencies: recipe loading, search, share text output, and export file content. Extends the smoke check approach."
+    },
+    {
+      "id": "SH-09",
+      "title": "Cache the app for offline use",
+      "state": "todo",
+      "group": "SH",
+      "deps": ["DA-02"],
+      "at": "2026-11-20T17:00:00Z",
+      "by": "human",
+      "desc": "Add a web app manifest and service worker that cache the app shell and recipe data after the first visit. Let users reopen and browse the recipe book without a network connection."
+    },
+    {
+      "id": "SH-10",
+      "title": "Share shopping list as text",
+      "state": "todo",
+      "group": "SH",
+      "deps": ["UI-06"],
+      "at": "2026-11-20T17:00:00Z",
+      "by": "human",
+      "desc": "Copy the generated shopping list as plain text so it can be sent to anyone or pasted into another app. Adds a copy button to the shopping list view."
+    },
+    {
+      "id": "SH-11",
+      "title": "Show offline readiness and status",
+      "state": "todo",
+      "group": "SH",
+      "deps": ["SH-09"],
+      "at": "2026-11-20T17:00:00Z",
+      "by": "human",
+      "desc": "Show whether the app is ready for offline use and whether the browser is currently offline. Provide a clear retry action if caching fails."
+    },
+    {
+      "id": "SH-13",
+      "title": "Add automated recipe behavior tests",
+      "state": "todo",
+      "group": "SH",
+      "deps": ["DA-02", "UI-02", "UI-03", "DA-03", "DA-05", "QA-01"],
+      "at": "2026-11-20T17:00:00Z",
+      "by": "human",
+      "desc": "Add a dependency-free browser test page that automatically checks recipe loading, search, tag filtering, favourites, and serving-size calculations. Report each result clearly as pass or fail."
+    },
+    {
+      "id": "SH-14",
+      "title": "Test sharing, accessibility, and offline use",
+      "state": "todo",
+      "group": "SH",
+      "deps": ["SH-09", "SH-13", "SH-01", "SH-02", "SH-05"],
+      "at": "2026-11-20T17:00:00Z",
+      "by": "human",
+      "desc": "Extend the local automated tests to verify shared text, JSON export contents, keyboard accessibility, and offline reload behavior. Document one local command or page that runs all checks without external services."
+    },
+    {
+      "id": "SH-07",
+      "title": "Export recipes as JSON",
+      "state": "todo",
+      "group": "SH",
+      "deps": ["DA-02"],
+      "at": "2026-11-20T17:00:00Z",
+      "by": "planner-a",
+      "desc": "A button downloads every recipe as one JSON file, in the same shape as recipes.json."
+    }
+  ]
+}

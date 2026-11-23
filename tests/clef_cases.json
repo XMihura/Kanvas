@@ -1,0 +1,752 @@
+{
+ "about": "Labelled cases for tests/clef_eval.py: what Clef should answer for each of the two questions Kanvas asks it (missing dependencies, duplicate proposals). Boards are paths from the repository root. The labels are one person's judgement; cases marked 'hard' are ones two people could label differently.",
+ "deps": [
+  {
+   "id": "d01",
+   "board": "tests/fixtures/tetris.json",
+   "task": "EN-03",
+   "remove": [
+    "EN-01",
+    "EN-02"
+   ],
+   "label": [
+    "EN-01",
+    "EN-02"
+   ],
+   "also_true": [
+    "ST-01"
+   ]
+  },
+  {
+   "id": "d02",
+   "board": "tests/fixtures/tetris.json",
+   "task": "EN-04",
+   "remove": [
+    "EN-03"
+   ],
+   "label": [
+    "EN-03"
+   ],
+   "also_true": [
+    "EN-01",
+    "EN-02",
+    "ST-01"
+   ]
+  },
+  {
+   "id": "d03",
+   "board": "tests/fixtures/tetris.json",
+   "task": "GM-01",
+   "remove": [
+    "EN-03"
+   ],
+   "label": [
+    "EN-03"
+   ],
+   "also_true": [
+    "EN-01",
+    "EN-02",
+    "ST-01"
+   ]
+  },
+  {
+   "id": "d04",
+   "board": "tests/fixtures/tetris.json",
+   "task": "GM-02",
+   "remove": [
+    "GM-01",
+    "EN-04"
+   ],
+   "label": [
+    "GM-01",
+    "EN-04"
+   ],
+   "also_true": [
+    "EN-01",
+    "EN-02",
+    "EN-03",
+    "ST-01"
+   ]
+  },
+  {
+   "id": "d05",
+   "board": "tests/fixtures/tetris.json",
+   "task": "GM-04",
+   "remove": [
+    "EN-05",
+    "GM-01"
+   ],
+   "label": [
+    "EN-05",
+    "GM-01"
+   ],
+   "also_true": [
+    "EN-01",
+    "EN-03",
+    "EN-02",
+    "ST-01",
+    "GM-02",
+    "EN-07"
+   ]
+  },
+  {
+   "id": "d06",
+   "board": "tests/fixtures/tetris.json",
+   "task": "UI-02",
+   "remove": [
+    "UI-01",
+    "EN-03"
+   ],
+   "label": [
+    "UI-01",
+    "EN-03"
+   ],
+   "also_true": [
+    "EN-01",
+    "EN-02",
+    "ST-01",
+    "GM-01"
+   ]
+  },
+  {
+   "id": "d07",
+   "board": "tests/fixtures/tetris.json",
+   "task": "UI-04",
+   "remove": [
+    "GM-04",
+    "UI-01"
+   ],
+   "label": [
+    "GM-04",
+    "UI-01"
+   ],
+   "also_true": [
+    "EN-05",
+    "GM-01",
+    "EN-01",
+    "EN-02",
+    "EN-03",
+    "ST-01"
+   ]
+  },
+  {
+   "id": "d08",
+   "board": "tests/fixtures/tetris.json",
+   "task": "PL-02",
+   "remove": [
+    "GM-05",
+    "GM-04"
+   ],
+   "label": [
+    "GM-05",
+    "GM-04"
+   ],
+   "also_true": [
+    "GM-01",
+    "EN-05",
+    "EN-03",
+    "EN-01",
+    "ST-01"
+   ]
+  },
+  {
+   "id": "d09",
+   "board": "tests/fixtures/tetris.json",
+   "task": "EN-06",
+   "remove": [
+    "EN-02"
+   ],
+   "label": [
+    "EN-02"
+   ],
+   "also_true": [
+    "ST-01"
+   ]
+  },
+  {
+   "id": "d10",
+   "board": "tests/fixtures/tetris.json",
+   "task": "EN-05",
+   "label": []
+  },
+  {
+   "id": "d11",
+   "board": "examples/sample.json",
+   "task": "FE-03",
+   "remove": [
+    "BE-03"
+   ],
+   "label": [
+    "BE-03"
+   ]
+  },
+  {
+   "id": "d12",
+   "board": "examples/sample.json",
+   "task": "LN-02",
+   "remove": [
+    "BE-04",
+    "FE-03"
+   ],
+   "label": [
+    "BE-04",
+    "FE-03"
+   ],
+   "also_true": [
+    "BE-03"
+   ]
+  },
+  {
+   "id": "d13",
+   "board": "examples/sample.json",
+   "task": "LN-01",
+   "remove": [
+    "BE-02",
+    "FE-02"
+   ],
+   "label": [
+    "BE-02",
+    "FE-02"
+   ],
+   "hard": true
+  },
+  {
+   "id": "d14",
+   "board": "examples/sample.json",
+   "task": "BE-04",
+   "label": []
+  },
+  {
+   "id": "d15",
+   "board": "examples/sample.json",
+   "task": "FE-04",
+   "label": []
+  },
+  {
+   "id": "d16",
+   "board": "examples/drone.json",
+   "task": "TR-04",
+   "remove": [
+    "TR-02"
+   ],
+   "label": [
+    "TR-02"
+   ]
+  },
+  {
+   "id": "d17",
+   "board": "examples/drone.json",
+   "task": "FT-02",
+   "remove": [
+    "TR-04",
+    "FT-01"
+   ],
+   "label": [
+    "TR-04",
+    "FT-01"
+   ],
+   "also_true": [
+    "TR-02",
+    "SM-04"
+   ]
+  },
+  {
+   "id": "d18",
+   "board": "examples/drone.json",
+   "task": "EV-02",
+   "remove": [
+    "EV-01"
+   ],
+   "label": [
+    "EV-01"
+   ],
+   "also_true": [
+    "TR-02"
+   ],
+   "hard": true
+  },
+  {
+   "id": "d19",
+   "board": "examples/drone.json",
+   "task": "TR-03",
+   "remove": [
+    "TR-02",
+    "SM-04"
+   ],
+   "label": [
+    "TR-02",
+    "SM-04"
+   ]
+  },
+  {
+   "id": "d20",
+   "board": "tests/fixtures/phases.json",
+   "task": "FE-03",
+   "remove": [
+    "BE-03"
+   ],
+   "label": [
+    "BE-03"
+   ]
+  },
+  {
+   "id": "d21",
+   "board": "tests/fixtures/phases.json",
+   "task": "QA-02",
+   "remove": [
+    "BE-04"
+   ],
+   "label": [
+    "BE-04"
+   ]
+  },
+  {
+   "id": "d22",
+   "board": "tests/fixtures/phases.json",
+   "task": "CT-03",
+   "remove": [
+    "CT-01"
+   ],
+   "label": [
+    "CT-01"
+   ],
+   "also_true": [
+    "FE-01",
+    "FE-02",
+    "BE-02",
+    "DS-04"
+   ]
+  },
+  {
+   "id": "d23",
+   "board": "tests/fixtures/recipes.json",
+   "task": "UI-06",
+   "remove": [],
+   "label": [
+    "DA-04"
+   ],
+   "note": "live test: amounts added up per item need structured quantities"
+  },
+  {
+   "id": "d24",
+   "board": "tests/fixtures/recipes.json",
+   "task": "DA-05",
+   "remove": [],
+   "label": [
+    "DA-04"
+   ],
+   "note": "live test: the scaler recalculates structured amounts"
+  },
+  {
+   "id": "d25",
+   "board": "tests/fixtures/recipes.json",
+   "task": "SH-03",
+   "remove": [],
+   "label": [],
+   "note": "live test: SH-07 repeats SH-02, which SH-03 already depends on"
+  },
+  {
+   "id": "d26",
+   "board": "tests/fixtures/recipes.json",
+   "task": "QA-01",
+   "remove": [],
+   "label": [
+    "DA-01"
+   ],
+   "also_true": [
+    "DA-04",
+    "DA-02"
+   ],
+   "note": "live test: the smoke check validates recipes.json"
+  }
+ ],
+ "dupes": [
+  {
+   "id": "u01",
+   "board": "examples/sample.json",
+   "title": "Retry Open-Meteo requests when they fail",
+   "desc": "Up to three retries with backoff before giving up.",
+   "label": "BE-05"
+  },
+  {
+   "id": "u02",
+   "board": "examples/sample.json",
+   "title": "Night theme",
+   "desc": "A dark color scheme that follows the OS, switchable from the header.",
+   "label": "FE-04"
+  },
+  {
+   "id": "u03",
+   "board": "examples/sample.json",
+   "title": "Throttle API clients",
+   "desc": "Limit each IP to 60 requests a minute and answer 429 with Retry-After.",
+   "label": "BE-04"
+  },
+  {
+   "id": "u04",
+   "board": "examples/sample.json",
+   "title": "Unit tests for the forecast cache",
+   "desc": "Cover expiry, unit conversion and cache misses.",
+   "label": null
+  },
+  {
+   "id": "u05",
+   "board": "examples/sample.json",
+   "title": "Alert when the site goes down",
+   "desc": "Check /health every minute and page me after two failures.",
+   "label": "LN-03"
+  },
+  {
+   "id": "u06",
+   "board": "examples/sample.json",
+   "title": "Stale-data banner when offline",
+   "desc": "Keep showing the last forecast, with a banner saying it may be old.",
+   "label": "FE-05"
+  },
+  {
+   "id": "u07",
+   "board": "examples/sample.json",
+   "title": "Wind map layer",
+   "desc": "An animated map of wind speed and direction.",
+   "label": null
+  },
+  {
+   "id": "u08",
+   "board": "examples/sample.json",
+   "title": "Docker image for the API server",
+   "desc": "A small image with the server and its config.",
+   "label": "LN-02",
+   "hard": true
+  },
+  {
+   "id": "u09",
+   "board": "examples/sample.json",
+   "title": "Document how to set up the project",
+   "desc": "Setup steps, configuration and screenshots in the README.",
+   "label": "LN-01"
+  },
+  {
+   "id": "u10",
+   "board": "examples/drone.json",
+   "title": "Train in stronger wind",
+   "desc": "Continue training the policy with gusts up to 12 m/s.",
+   "label": "TR-03"
+  },
+  {
+   "id": "u11",
+   "board": "examples/drone.json",
+   "title": "Benchmark the policy against the autopilot",
+   "desc": "Fly both on the held-out courses and compare gate times and crashes.",
+   "label": "EV-02"
+  },
+  {
+   "id": "u12",
+   "board": "examples/drone.json",
+   "title": "Night flight test",
+   "desc": "Fly the gates after sunset with the onboard lights.",
+   "label": null
+  },
+  {
+   "id": "u13",
+   "board": "examples/drone.json",
+   "title": "Set up gates on the test field",
+   "desc": "Three gates at the field for the first real flights.",
+   "label": "FT-01"
+  },
+  {
+   "id": "u14",
+   "board": "tests/fixtures/tetris.json",
+   "title": "Hard drop and soft drop keys",
+   "desc": "Space for hard drop, down arrow for soft drop.",
+   "label": "GM-02",
+   "hard": true
+  },
+  {
+   "id": "u15",
+   "board": "tests/fixtures/tetris.json",
+   "title": "Piece preview panel",
+   "desc": "Show the next five pieces next to the board.",
+   "label": "UI-03"
+  },
+  {
+   "id": "u16",
+   "board": "tests/fixtures/tetris.json",
+   "title": "Line clear animation",
+   "desc": "Flash cleared rows before they disappear.",
+   "label": null
+  },
+  {
+   "id": "u17",
+   "board": "tests/fixtures/tetris.json",
+   "title": "Wall kicks for rotation",
+   "desc": "SRS kick tables so pieces can rotate next to walls.",
+   "label": "EN-04"
+  },
+  {
+   "id": "u18",
+   "board": "tests/fixtures/tetris.json",
+   "title": "Save best scores in the browser",
+   "desc": "Keep the ten best scores between visits.",
+   "label": "PL-02"
+  },
+  {
+   "id": "u19",
+   "board": "tests/fixtures/tetris.json",
+   "title": "Touch controls for phones",
+   "desc": "Swipes and taps to play on a phone.",
+   "label": "PL-03"
+  },
+  {
+   "id": "u20",
+   "board": "tests/fixtures/tetris.json",
+   "title": "Pause with P",
+   "desc": "P pauses and resumes the game, with a dimmed overlay.",
+   "label": null
+  },
+  {
+   "id": "u21",
+   "board": "tests/fixtures/phases.json",
+   "title": "Redirect old URLs to the new pages",
+   "desc": "",
+   "label": "BE-04"
+  },
+  {
+   "id": "u22",
+   "board": "tests/fixtures/phases.json",
+   "title": "Monitor errors after launch",
+   "desc": "",
+   "label": "LN-03"
+  },
+  {
+   "id": "u23",
+   "board": "tests/fixtures/phases.json",
+   "title": "Write a press release about the relaunch",
+   "desc": "",
+   "label": "LN-02",
+   "hard": true
+  },
+  {
+   "id": "u24",
+   "board": "tests/fixtures/phases.json",
+   "title": "Translate the site into Spanish",
+   "desc": "",
+   "label": null
+  }
+ ],
+ "order": [
+  {
+   "id": "o01",
+   "board": "tests/fixtures/recipes.json",
+   "task": "UI-02",
+   "with": [
+    "UI-03",
+    "UI-06",
+    "UI-04",
+    "UI-05",
+    "QA-01"
+   ],
+   "label": [
+    "UI-03"
+   ],
+   "also_true": [
+    "UI-06"
+   ],
+   "why": "run 3: search and tag chips both rewrote the list filtering; the shopping list touched the same cards"
+  },
+  {
+   "id": "o02",
+   "board": "tests/fixtures/recipes.json",
+   "task": "UI-03",
+   "with": [
+    "UI-02",
+    "UI-04",
+    "SH-09",
+    "QA-01"
+   ],
+   "label": [
+    "UI-02"
+   ]
+  },
+  {
+   "id": "o03",
+   "board": "tests/fixtures/recipes.json",
+   "task": "SH-07",
+   "with": [
+    "SH-02",
+    "SH-01",
+    "UI-04",
+    "SH-09"
+   ],
+   "label": [
+    "SH-02"
+   ],
+   "why": "run 3: two whole-book exports"
+  },
+  {
+   "id": "o04",
+   "board": "tests/fixtures/recipes.json",
+   "task": "SH-09",
+   "with": [
+    "SH-05",
+    "UI-03",
+    "UI-04",
+    "SH-01"
+   ],
+   "label": [
+    "SH-05"
+   ]
+  },
+  {
+   "id": "o05",
+   "board": "tests/fixtures/recipes.json",
+   "task": "UI-04",
+   "with": [
+    "UI-05",
+    "UI-02",
+    "QA-01"
+   ],
+   "label": []
+  },
+  {
+   "id": "o06",
+   "board": "tests/fixtures/recipes.json",
+   "task": "SH-01",
+   "with": [
+    "SH-10",
+    "UI-05",
+    "DA-05"
+   ],
+   "label": []
+  },
+  {
+   "id": "o07",
+   "board": "tests/fixtures/recipes.json",
+   "task": "DA-05",
+   "with": [
+    "DA-03",
+    "UI-05",
+    "SH-01"
+   ],
+   "label": [],
+   "also_true": [
+    "DA-03"
+   ]
+  },
+  {
+   "id": "o08",
+   "board": "tests/fixtures/recipes.json",
+   "task": "UI-06",
+   "with": [
+    "UI-04",
+    "SH-07",
+    "DA-05"
+   ],
+   "label": []
+  },
+  {
+   "id": "o09",
+   "board": "tests/fixtures/notes.json",
+   "task": "ED-06",
+   "with": [
+    "ED-07",
+    "ED-03",
+    "UI-01",
+    "DOC-01"
+   ],
+   "label": [
+    "ED-07"
+   ]
+  },
+  {
+   "id": "o10",
+   "board": "tests/fixtures/notes.json",
+   "task": "ST-01",
+   "with": [
+    "ED-04",
+    "ST-02",
+    "UI-03",
+    "ED-05"
+   ],
+   "label": [
+    "ST-02"
+   ],
+   "also_true": [
+    "ED-04"
+   ]
+  },
+  {
+   "id": "o11",
+   "board": "tests/fixtures/notes.json",
+   "task": "UI-02",
+   "with": [
+    "UI-03",
+    "ED-02",
+    "ST-02"
+   ],
+   "label": [
+    "UI-03"
+   ]
+  },
+  {
+   "id": "o12",
+   "board": "tests/fixtures/notes.json",
+   "task": "ED-03",
+   "with": [
+    "ED-05",
+    "UI-01",
+    "DOC-01",
+    "ST-02"
+   ],
+   "label": []
+  },
+  {
+   "id": "o13",
+   "board": "tests/fixtures/notes.json",
+   "task": "ED-01",
+   "with": [
+    "ED-02",
+    "ED-05",
+    "UI-03"
+   ],
+   "label": [],
+   "also_true": [
+    "ED-02"
+   ]
+  },
+  {
+   "id": "o14",
+   "board": "tests/fixtures/notes.json",
+   "task": "DOC-01",
+   "with": [
+    "ED-06",
+    "ST-01",
+    "UI-02"
+   ],
+   "label": []
+  },
+  {
+   "id": "o15",
+   "board": "tests/fixtures/notes.json",
+   "task": "UI-01",
+   "with": [
+    "ED-06",
+    "UI-03",
+    "ED-04"
+   ],
+   "label": []
+  },
+  {
+   "id": "o16",
+   "board": "tests/fixtures/notes.json",
+   "task": "ST-02",
+   "with": [
+    "ST-01",
+    "UI-02",
+    "ED-03"
+   ],
+   "label": [
+    "ST-01"
+   ]
+  }
+ ]
+}
